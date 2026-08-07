@@ -491,7 +491,6 @@ async def on_startup():
     scheduler.add_job(send_morning_schedule, "cron", hour=7, minute=0)
     scheduler.add_job(send_evening_schedule, "cron", hour=19, minute=0)
     scheduler.start()
-    await bot.send_message(config.YOUR_TELEGRAM_ID, "✅ Бот запущен! Рассылки: 07:00 и 19:00")
 
 async def main():
     dp.startup.register(on_startup)
