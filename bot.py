@@ -43,7 +43,7 @@ GRAPHIC_ALIASES = {
 }
 
 GRAPHIC_NAMES = {
-    "2x2_day": "2x2 день",
+    "2x2_day": "2×2 день",
     "24x3": "сутки/3",
     "2-1-2-3": "2-1-2-3",
 }
@@ -174,6 +174,77 @@ async def cmd_schedule(message: types.Message):
     ])
     await message.answer("Выберите период:", reply_markup=kb)
 
+def format_schedule(for_date, employees):
+    """Возвращает текст расписания на одну дату"""
+    date_str = for_date.strftime("%Y-%m-%d")
+    overrides_raw = db.list_overrides_for_date(date_str)
+    overrides = set()
+    for o in overrides_raw:
+        emp = next((e for e in employees if e[1] == o[1]), None)
+        if emp:
+            overrides.add((emp[0], date_str, o[3]))
+    
+    day_workers = list(set(get_day_schedule(for_date, employees, overrides)))
+    night_workers = list(set(get_night_schedule(for_date, employees, overrides)))
+    
+    lines = []
+    lines.append("День (08:00-20:00):")
+    if day_workers:
+        for w in sorted(day_workers):
+            emp = next((e for e in employees if e[1] == w), None)
+            star = " PB" if emp and (emp[0], date_str, "day") in overrides else ""
+            lines.append(f"   {w}{star}")
+    else:
+        lines.append("   Нет")
+    lines.append("")
+    lines.append("Ночь (20:00-08:00):")
+    if night_workers:
+        for w in sorted(night_workers):
+            emp = next((e for e in employees if e[1] == w), None)
+            star = " PB" if emp and (emp[0], date_str, "night") in overrides else ""
+            lines.append(f"   {w}{star}")
+    else:
+        lines.append("   Нет")
+    return "\n".join(lines)
+
+
+def format_week_schedule(start_date, employees):
+    """Форматирует расписание на неделю в читабельном виде"""
+    lines = []
+    lines.append("=" * 35)
+    lines.append(f" НЕДЕЛЯ С {start_date.strftime('%d.%m.%Y')}")
+    lines.append("=" * 35)
+    lines.append("")
+    
+    for i in range(7):
+        d = start_date + timedelta(days=i)
+        date_str = d.strftime("%Y-%m-%d")
+        
+        overrides_raw = db.list_overrides_for_date(date_str)
+        overrides = set()
+        for o in overrides_raw:
+            emp = next((e for e in employees if e[1] == o[1]), None)
+            if emp:
+                overrides.add((emp[0], date_str, o[3]))
+        
+        day_workers = list(set(get_day_schedule(d, employees, overrides)))
+        night_workers = list(set(get_night_schedule(d, employees, overrides)))
+        
+        day_name = d.strftime("%a")
+        date_formatted = d.strftime("%d.%m")
+        
+        day_text = ", ".join(sorted(day_workers)) if day_workers else "-"
+        night_text = ", ".join(sorted(night_workers)) if night_workers else "-"
+        
+        lines.append(f" {day_name} {date_formatted}")
+        lines.append(f"   День: {day_text}")
+        lines.append(f"   Ночь: {night_text}")
+        lines.append("")
+    
+    lines.append("=" * 35)
+    return "\n".join(lines)
+
+
 @dp.callback_query(lambda c: c.data.startswith("sched_"))
 async def process_schedule_query(callback: CallbackQuery):
     employees = db.list_employees()
@@ -189,14 +260,8 @@ async def process_schedule_query(callback: CallbackQuery):
     elif callback.data == "sched_tomorrow":
         await show_schedule(callback.message, today + timedelta(days=1), employees)
     elif callback.data == "sched_week":
-        await callback.message.edit_text("Формирую расписание на неделю...")
-        days = []
-        for i in range(7):
-            d = today + timedelta(days=i)
-            s = format_schedule(d, employees)
-            days.append(f"--- {d.strftime('%d.%m.%Y (%A)')} ---\n{s}")
-        for i in range(0, len(days), 3):
-            await callback.message.answer("\n\n".join(days[i:i+3]))
+        text = format_week_schedule(today, employees)
+        await callback.message.edit_text(text)
     elif callback.data == "sched_custom":
         user_data[callback.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
         await callback.message.edit_text("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
@@ -241,38 +306,6 @@ async def cmd_date_schedule(message: types.Message):
         return
     user_data[message.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
     await message.answer("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
-
-def format_schedule(for_date, employees):
-    date_str = for_date.strftime("%Y-%m-%d")
-    overrides_raw = db.list_overrides_for_date(date_str)
-    overrides = set()
-    for o in overrides_raw:
-        emp = next((e for e in employees if e[1] == o[1]), None)
-        if emp:
-            overrides.add((emp[0], date_str, o[3]))
-    
-    day_workers = list(set(get_day_schedule(for_date, employees, overrides)))
-    night_workers = list(set(get_night_schedule(for_date, employees, overrides)))
-    
-    lines = []
-    lines.append("День (08:00-20:00):")
-    if day_workers:
-        for w in sorted(day_workers):
-            emp = next((e for e in employees if e[1] == w), None)
-            star = " PB" if emp and (emp[0], date_str, "day") in overrides else ""
-            lines.append(f"   {w}{star}")
-    else:
-        lines.append("   Нет")
-    lines.append("")
-    lines.append("Ночь (20:00-08:00):")
-    if night_workers:
-        for w in sorted(night_workers):
-            emp = next((e for e in employees if e[1] == w), None)
-            star = " PB" if emp and (emp[0], date_str, "night") in overrides else ""
-            lines.append(f"   {w}{star}")
-    else:
-        lines.append("   Нет")
-    return "\n".join(lines)
 
 async def show_schedule(msg, for_date, employees):
     text = f"Расписание на {for_date.strftime('%d.%m.%Y (%A)')}\n\n{format_schedule(for_date, employees)}"
