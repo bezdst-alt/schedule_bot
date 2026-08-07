@@ -48,6 +48,7 @@ GRAPHIC_NAMES = {
     "2-1-2-3": "2-1-2-3",
 }
 
+# Дни недели на русском
 WEEKDAYS_RU = {
     0: "Понедельник",
     1: "Вторник",
@@ -58,20 +59,15 @@ WEEKDAYS_RU = {
     6: "Воскресенье",
 }
 
-MONTHS_RU = {
-    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
-    5: "мая", 6: "июня", 7: "июля", 8: "августа",
-    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
+WEEKDAYS_RU_SHORT = {
+    0: "Пн",
+    1: "Вт",
+    2: "Ср",
+    3: "Чт",
+    4: "Пт",
+    5: "Сб",
+    6: "Вс",
 }
-
-def format_date_ru(d):
-    """Форматирует дату: '05 августа'"""
-    return f"{d.day:02d} {MONTHS_RU[d.month]}"
-
-def format_date_ru_full(d):
-    """Форматирует дату: 'Понедельник, 05 августа'"""
-    weekday = WEEKDAYS_RU.get(d.weekday(), "")
-    return f"{weekday}, {format_date_ru(d)}"
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -79,21 +75,21 @@ async def cmd_start(message: types.Message):
         return
     text = (
         "👋 Привет! Я бот для управления расписанием сотрудников.\n\n"
-        "📋 **Доступные команды:**\n\n"
+        "📋 Доступные команды:\n\n"
         "👤 **Сотрудники**\n"
-        "   /add_employee — Добавить одного\n"
-        "   /add_employees_bulk — Массовое добавление\n"
-        "   /remove_employee — Удалить\n"
-        "   /list_employees — Список\n\n"
+        "/add_employee - Добавить одного\n"
+        "/add_employees_bulk - Массовое добавление\n"
+        "/remove_employee - Удалить\n"
+        "/list_employees - Список\n\n"
         "⭐ **РВ (Работа в выходной)**\n"
-        "   /add_override — Добавить\n"
-        "   /remove_override — Удалить\n\n"
+        "/add_override - Добавить\n"
+        "/remove_override - Удалить\n\n"
         "📢 **Получатели рассылки**\n"
-        "   /add_recipient — Добавить\n"
-        "   /remove_recipient — Удалить\n"
-        "   /list_recipients — Список\n\n"
+        "/add_recipient - Добавить\n"
+        "/remove_recipient - Удалить\n"
+        "/list_recipients - Список\n\n"
         "📅 **Расписание**\n"
-        "   /schedule — Показать"
+        "/schedule - Показать"
     )
     await message.answer(text, parse_mode="Markdown")
 
@@ -249,10 +245,10 @@ def format_schedule(for_date, employees):
 
 
 def format_week_schedule(start_date, employees):
-    """Форматирует расписание на неделю"""
+    """Форматирует расписание на неделю в читабельном виде"""
     lines = []
     lines.append("📅 **РАСПИСАНИЕ НА НЕДЕЛЮ**")
-    lines.append(f"🗓 С {format_date_ru(start_date)}")
+    lines.append(f"🗓 С {start_date.strftime('%d.%m.%Y')}")
     lines.append("")
     
     for i in range(7):
@@ -269,7 +265,10 @@ def format_week_schedule(start_date, employees):
         day_workers = list(set(get_day_schedule(d, employees, overrides)))
         night_workers = list(set(get_night_schedule(d, employees, overrides)))
         
-        lines.append(f"━━━ {format_date_ru_full(d)} ━━━")
+        weekday_ru = WEEKDAYS_RU.get(d.weekday(), "")
+        date_formatted = d.strftime("%d.%m")
+        
+        lines.append(f"━━━ {weekday_ru} ({date_formatted}) ━━━")
         lines.append("")
         lines.append("☀️ **День:**")
         if day_workers:
@@ -333,8 +332,9 @@ async def process_custom_schedule(message: types.Message):
         days = []
         d = start
         while d <= end:
+            weekday_ru = WEEKDAYS_RU.get(d.weekday(), "")
             s = format_schedule(d, employees)
-            days.append(f"━━━ {format_date_ru_full(d)} ━━━\n{s}")
+            days.append(f"━━━ {weekday_ru} ({d.strftime('%d.%m.%Y')}) ━━━\n{s}")
             d += timedelta(days=1)
         for i in range(0, len(days), 3):
             await message.answer("\n\n".join(days[i:i+3]), parse_mode="Markdown")
@@ -357,7 +357,8 @@ async def cmd_date_schedule(message: types.Message):
     await message.answer("📆 Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
 
 async def show_schedule(msg, for_date, employees):
-    text = f"📅 **Расписание на {format_date_ru_full(for_date)}**\n\n{format_schedule(for_date, employees)}"
+    weekday_ru = WEEKDAYS_RU.get(for_date.weekday(), "")
+    text = f"📅 **Расписание на {for_date.strftime('%d.%m.%Y')} ({weekday_ru})**\n\n{format_schedule(for_date, employees)}"
     await msg.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("add_employee"))
@@ -619,7 +620,9 @@ async def send_morning_schedule():
     day_workers = list(set(get_day_schedule(today, employees, overrides)))
     night_workers = list(set(get_night_schedule(today, employees, overrides)))
     
-    text = f"🌅 **Доброе утро!**\n📅 Расписание на **{format_date_ru_full(today)}**\n\n"
+    weekday_ru = WEEKDAYS_RU.get(today.weekday(), "")
+    
+    text = f"🌅 **Доброе утро!**\n📅 Расписание на **{today.strftime('%d.%m.%Y')} ({weekday_ru})**\n\n"
     text += "☀️ **День (08:00-20:00):**\n"
     if day_workers:
         for w in sorted(day_workers):
@@ -670,7 +673,9 @@ async def send_evening_schedule():
             text += f"   👤 {w}\n"
     else:
         text += "   ❌ Нет\n"
-    text += f"\n☀️ **Завтра днём ({format_date_ru_full(tomorrow)}):**\n"
+    
+    weekday_ru = WEEKDAYS_RU.get(tomorrow.weekday(), "")
+    text += f"\n☀️ **Завтра днём ({tomorrow.strftime('%d.%m.%Y')}, {weekday_ru}):**\n"
     if tomorrow_day:
         for w in sorted(tomorrow_day):
             text += f"   👤 {w}\n"
