@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, date, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -29,28 +30,138 @@ async def admin_only(message: types.Message):
 
 user_data = {}
 
+# ====== ГРАФИКИ ======
+GRAPHIC_ALIASES = {
+    "2-1-2-3": "2-1-2-3",
+    "сутки/3": "24x3",
+    "сутки через трое": "24x3",
+    "сутки": "24x3",
+    "2×2 день": "2x2_day",
+    "2x2 день": "2x2_day",
+    "2×2": "2x2_day",
+    "2x2": "2x2_day",
+    "два через два": "2x2_day",
+}
+
+GRAPHIC_NAMES = {
+    "2x2_day": "2×2 день",
+    "24x3": "сутки/3",
+    "2-1-2-3": "2-1-2-3",
+}
+
 # ====== START ======
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not await admin_only(message):
         return
     text = (
-        "👋 Привет! Я бот для управления расписанием сотрудников.\n\n"
+        "👋 Привет! Бот расписания сотрудников.\n\n"
         "📋 Команды:\n"
-        "/add_employee - Добавить сотрудника\n"
+        "/add_employee - Добавить одного сотрудника\n"
+        "/add_employees_bulk - Массовое добавление сотрудников\n"
         "/remove_employee - Удалить сотрудника\n"
         "/list_employees - Список сотрудников\n"
-        "/add_override - Добавить РВ (переработку)\n"
+        "/add_override - Добавить РВ\n"
         "/remove_override - Удалить РВ\n"
-        "/add_recipient - Добавить получателя рассылки\n"
+        "/add_recipient - Добавить получателя\n"
         "/remove_recipient - Удалить получателя\n"
         "/list_recipients - Список получателей\n"
-        "/schedule - Расписание на сегодня/завтра/неделю\n"
-        "/date_schedule - Расписание на выбранную дату"
+        "/schedule - Расписание\n"
+        "/date_schedule - Расписание на дату"
     )
     await message.answer(text)
 
-# ====== СПИСОК СОТРУДНИКОВ ======
+# ====== МАССОВОЕ ДОБАВЛЕНИЕ (НОВЫЙ ФОРМАТ) ======
+@dp.message(Command("add_employees_bulk"))
+async def cmd_add_employees_bulk(message: types.Message):
+    if not await admin_only(message):
+        return
+    
+    text = (
+        "📋 **Массовое добавление сотрудников**\n\n"
+        "Отправь список в ТОЧНО таком формате (как в /list_employees):\n\n"
+        "```\n"
+        "Иван Иванов — 2-1-2-3 (с 2026-08-01)\n"
+        "Пётр Петров — сутки/3 (с 2026-08-05)\n"
+        "Сидор Сидоров — 2×2 день (с 2026-08-10)\n"
+        "```\n\n"
+        "Доступные графики:\n"
+        "• `2-1-2-3`\n"
+        "• `сутки/3`\n"
+        "• `2×2 день` или `2x2 день`\n\n"
+        "Разделитель между именем и графиком: ` — ` (тире с пробелами)\n"
+        "Дата строго внутри скобок: `(с ГГГГ-ММ-ДД)`"
+    )
+    await message.answer(text, parse_mode="Markdown")
+    user_data[message.from_user.id] = {'action': 'bulk_add', 'step': 'waiting_list'}
+
+@dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'bulk_add')
+async def process_bulk_add(message: types.Message):
+    uid = message.from_user.id
+    text = message.text.strip()
+    lines = text.strip().split("\n")
+    
+    added = []
+    errors = []
+    
+    # Регулярное выражение для парсинга строки:
+    # Имя Фамилия — график (с ГГГГ-ММ-ДД)
+    # Пример: Александр Ерофеев — 2-1-2-3 (с 2026-08-03)
+    pattern = r'^(.*?)\s*[—–-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        
+        match = re.match(pattern, line)
+        if not match:
+            errors.append(f"Строка {i+1}: неверный формат. Нужно: Имя — график (с ГГГГ-ММ-ДД)")
+            continue
+        
+        name = match.group(1).strip()
+        graphic_text = match.group(2).strip().lower()
+        date_str = match.group(3).strip()
+        
+        # Определяем график
+        graphic_type = None
+        for alias, gtype in GRAPHIC_ALIASES.items():
+            if graphic_text == alias or graphic_text.startswith(alias):
+                graphic_type = gtype
+                break
+        
+        if not graphic_type:
+            errors.append(f"Строка {i+1}: неизвестный график «{match.group(2).strip()}»")
+            continue
+        
+        # Парсим дату
+        try:
+            parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except:
+            errors.append(f"Строка {i+1}: неверная дата «{date_str}»")
+            continue
+        
+        start_date = parsed_date.strftime("%Y-%m-%d")
+        
+        success = db.add_employee(name, graphic_type, start_date)
+        if success:
+            added.append(f"✅ {name} — {GRAPHIC_NAMES.get(graphic_type, graphic_type)} (с {start_date})")
+        else:
+            errors.append(f"❌ {name} — уже существует")
+    
+    # Формируем ответ
+    result_parts = []
+    if added:
+        result_parts.append("✅ **Добавлены:**\n" + "\n".join(added))
+    if errors:
+        result_parts.append("❌ **Ошибки:**\n" + "\n".join(errors))
+    if not added and not errors:
+        result_parts.append("❌ Ничего не добавлено. Проверь формат.")
+    
+    await message.answer("\n\n".join(result_parts), parse_mode="Markdown")
+    del user_data[uid]
+
+# ====== ОСТАЛЬНОЙ КОД НИЖЕ БЕЗ ИЗМЕНЕНИЙ ======
 @dp.message(Command("list_employees"))
 async def cmd_list_employees(message: types.Message):
     if not await admin_only(message):
@@ -59,14 +170,13 @@ async def cmd_list_employees(message: types.Message):
     if not employees:
         await message.answer("📭 Нет сотрудников.")
         return
-    graphic_names = {"2x2_day": "2×2 день", "24x3": "сутки/3", "2-1-2-3": "2-1-2-3"}
-    lines = ["📋 Список сотрудников:\n"]
+    lines = ["📋 **Список сотрудников:**\n"]
     for emp in employees:
         name = emp[1]
-        gtype = graphic_names.get(emp[2], emp[2])
+        gtype = GRAPHIC_NAMES.get(emp[2], emp[2])
         start = emp[3]
         lines.append(f"👤 {name} — {gtype} (с {start})")
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 # ====== РАСПИСАНИЕ ======
 @dp.message(Command("schedule"))
@@ -101,9 +211,9 @@ async def process_schedule_query(callback: CallbackQuery):
         for i in range(7):
             d = today + timedelta(days=i)
             s = format_schedule(d, employees)
-            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{s}")
+            days.append(f"━━━ **{d.strftime('%d.%m.%Y (%A)')}** ━━━\n{s}")
         for i in range(0, len(days), 3):
-            await callback.message.answer("\n\n".join(days[i:i+3]))
+            await callback.message.answer("\n\n".join(days[i:i+3]), parse_mode="Markdown")
     elif callback.data == "sched_custom":
         user_data[callback.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
         await callback.message.edit_text("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
@@ -127,10 +237,10 @@ async def process_custom_schedule(message: types.Message):
         days = []
         d = start
         while d <= end:
-            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{format_schedule(d, employees)}")
+            days.append(f"━━━ **{d.strftime('%d.%m.%Y (%A)')}** ━━━\n{format_schedule(d, employees)}")
             d += timedelta(days=1)
         for i in range(0, len(days), 3):
-            await message.answer("\n\n".join(days[i:i+3]))
+            await message.answer("\n\n".join(days[i:i+3]), parse_mode="Markdown")
     else:
         try:
             d = datetime.strptime(text.strip(), "%d.%m.%Y").date()
@@ -162,7 +272,7 @@ def format_schedule(for_date, employees):
     night_workers = list(set(get_night_schedule(for_date, employees, overrides)))
     
     lines = []
-    lines.append("☀️ День (08:00-20:00):")
+    lines.append("☀️ **День (08:00-20:00):**")
     if day_workers:
         for w in sorted(day_workers):
             emp = next((e for e in employees if e[1] == w), None)
@@ -171,7 +281,7 @@ def format_schedule(for_date, employees):
     else:
         lines.append("   ❌ Нет")
     lines.append("")
-    lines.append("🌙 Ночь (20:00-08:00):")
+    lines.append("🌙 **Ночь (20:00-08:00):**")
     if night_workers:
         for w in sorted(night_workers):
             emp = next((e for e in employees if e[1] == w), None)
@@ -182,10 +292,10 @@ def format_schedule(for_date, employees):
     return "\n".join(lines)
 
 async def show_schedule(msg, for_date, employees):
-    text = f"📅 Расписание на {for_date.strftime('%d.%m.%Y (%A)')}\n\n{format_schedule(for_date, employees)}"
-    await msg.answer(text)
+    text = f"📅 **Расписание на {for_date.strftime('%d.%m.%Y (%A)')}**\n\n{format_schedule(for_date, employees)}"
+    await msg.answer(text, parse_mode="Markdown")
 
-# ====== ДОБАВЛЕНИЕ СОТРУДНИКА ======
+# ====== ДОБАВЛЕНИЕ ОДНОГО СОТРУДНИКА ======
 @dp.message(Command("add_employee"))
 async def cmd_add_employee(message: types.Message):
     if not await admin_only(message):
@@ -212,7 +322,7 @@ async def process_employee_name(message: types.Message):
     uid = message.from_user.id
     user_data[uid]['name'] = message.text.strip()
     user_data[uid]['step'] = 'waiting_date'
-    await message.answer("Введите дату начала графика (ДД.ММ.ГГГГ, например 01.03.2025):")
+    await message.answer("Введите дату начала графика (ДД.ММ.ГГГГ):")
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'add_employee' and 
             user_data[msg.from_user.id].get('step') == 'waiting_date')
@@ -391,7 +501,7 @@ async def process_recipient_id(message: types.Message):
         user_id_to_add = int(message.text.strip())
         name = f"User {user_id_to_add}"
     else:
-        await message.answer("❌ Не удалось определить ID. Пришлите ID цифрами или перешлите сообщение.")
+        await message.answer("❌ Не удалось определить ID.")
         return
     success = db.add_recipient(user_id_to_add, name)
     if success:
@@ -428,10 +538,10 @@ async def cmd_list_recipients(message: types.Message):
     if not recipients:
         await message.answer("📭 Нет получателей.")
         return
-    lines = ["📋 Получатели:\n"]
+    lines = ["📋 **Получатели:**\n"]
     for r in recipients:
         lines.append(f"👤 {r[1]} (ID: {r[0]})")
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 # ====== РАССЫЛКИ ======
 async def send_morning_schedule():
@@ -449,80 +559,16 @@ async def send_morning_schedule():
     day_workers = list(set(get_day_schedule(today, employees, overrides)))
     night_workers = list(set(get_night_schedule(today, employees, overrides)))
     
-    text = f"🌅 Доброе утро! Расписание на {today.strftime('%d.%m.%Y')}\n\n☀️ День (08:00-20:00):\n"
+    text = f"🌅 **Доброе утро!** Расписание на **{today.strftime('%d.%m.%Y')}**\n\n☀️ **День (08:00-20:00):**\n"
     if day_workers:
         for w in sorted(day_workers):
-            text += f"   👤 {w}\n"
+            emp = next((e for e in employees if e[1] == w), None)
+            star = " ⭐️РВ" if emp and (emp[0], date_str, "day") in overrides else ""
+            text += f"   👤 {w}{star}\n"
     else:
         text += "   ❌ Нет\n"
-    text += "\n🌙 Ночь (20:00-08:00):\n"
+    text += "\n🌙 **Ночь (20:00-08:00):**\n"
     if night_workers:
         for w in sorted(night_workers):
-            text += f"   👤 {w}\n"
-    else:
-        text += "   ❌ Нет\n"
-    
-    recipients = db.list_recipients()
-    for r in recipients:
-        try:
-            await bot.send_message(r[0], text)
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-
-async def send_evening_schedule():
-    today = date.today()
-    tomorrow = today + timedelta(days=1)
-    employees = db.list_employees()
-    if not employees:
-        return
-    
-    date_str = today.strftime("%Y-%m-%d")
-    overrides_raw = db.list_overrides_for_date(date_str)
-    overrides = set()
-    for o in overrides_raw:
-        emp = next((e for e in employees if e[1] == o[1]), None)
-        if emp:
-            overrides.add((emp[0], date_str, o[3]))
-    night_workers = list(set(get_night_schedule(today, employees, overrides)))
-    
-    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-    overrides_t = db.list_overrides_for_date(tomorrow_str)
-    overrides_tomorrow = set()
-    for o in overrides_t:
-        emp = next((e for e in employees if e[1] == o[1]), None)
-        if emp:
-            overrides_tomorrow.add((emp[0], tomorrow_str, o[3]))
-    tomorrow_day = list(set(get_day_schedule(tomorrow, employees, overrides_tomorrow)))
-    
-    text = f"🌆 Добрый вечер!\n\n🌙 Сегодня ночью (20:00-08:00):\n"
-    if night_workers:
-        for w in sorted(night_workers):
-            text += f"   👤 {w}\n"
-    else:
-        text += "   ❌ Нет\n"
-    text += f"\n☀️ Завтра днём ({tomorrow.strftime('%d.%m.%Y')}, 08:00-20:00):\n"
-    if tomorrow_day:
-        for w in sorted(tomorrow_day):
-            text += f"   👤 {w}\n"
-    else:
-        text += "   ❌ Нет\n"
-    
-    recipients = db.list_recipients()
-    for r in recipients:
-        try:
-            await bot.send_message(r[0], text)
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-
-async def on_startup():
-    scheduler.add_job(send_morning_schedule, "cron", hour=7, minute=0)
-    scheduler.add_job(send_evening_schedule, "cron", hour=19, minute=0)
-    scheduler.start()
-
-async def main():
-    dp.startup.register(on_startup)
-    print("Бот запускается...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            emp = next((e for e in employees if e[1] == w), None)
+            star = "
