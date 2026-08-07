@@ -29,6 +29,7 @@ async def admin_only(message: types.Message):
 
 user_data = {}
 
+# ====== START ======
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not await admin_only(message):
@@ -49,6 +50,142 @@ async def cmd_start(message: types.Message):
     )
     await message.answer(text)
 
+# ====== СПИСОК СОТРУДНИКОВ ======
+@dp.message(Command("list_employees"))
+async def cmd_list_employees(message: types.Message):
+    if not await admin_only(message):
+        return
+    employees = db.list_employees()
+    if not employees:
+        await message.answer("📭 Нет сотрудников.")
+        return
+    graphic_names = {"2x2_day": "2×2 день", "24x3": "сутки/3", "2-1-2-3": "2-1-2-3"}
+    lines = ["📋 Список сотрудников:\n"]
+    for emp in employees:
+        name = emp[1]
+        gtype = graphic_names.get(emp[2], emp[2])
+        start = emp[3]
+        lines.append(f"👤 {name} — {gtype} (с {start})")
+    await message.answer("\n".join(lines))
+
+# ====== РАСПИСАНИЕ ======
+@dp.message(Command("schedule"))
+async def cmd_schedule(message: types.Message):
+    if not await admin_only(message):
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Сегодня", callback_data="sched_today")],
+        [InlineKeyboardButton(text="📅 Завтра", callback_data="sched_tomorrow")],
+        [InlineKeyboardButton(text="📅 Неделя", callback_data="sched_week")],
+        [InlineKeyboardButton(text="📅 Выбрать дату", callback_data="sched_custom")],
+    ])
+    await message.answer("Выберите период:", reply_markup=kb)
+
+@dp.callback_query(lambda c: c.data.startswith("sched_"))
+async def process_schedule_query(callback: CallbackQuery):
+    employees = db.list_employees()
+    today = date.today()
+    
+    if not employees:
+        await callback.message.edit_text("📭 Нет сотрудников.")
+        await callback.answer()
+        return
+    
+    if callback.data == "sched_today":
+        await show_schedule(callback.message, today, employees)
+    elif callback.data == "sched_tomorrow":
+        await show_schedule(callback.message, today + timedelta(days=1), employees)
+    elif callback.data == "sched_week":
+        await callback.message.edit_text("Формирую расписание на неделю...")
+        days = []
+        for i in range(7):
+            d = today + timedelta(days=i)
+            s = format_schedule(d, employees)
+            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{s}")
+        for i in range(0, len(days), 3):
+            await callback.message.answer("\n\n".join(days[i:i+3]))
+    elif callback.data == "sched_custom":
+        user_data[callback.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
+        await callback.message.edit_text("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
+    
+    await callback.answer()
+
+@dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'schedule_custom')
+async def process_custom_schedule(message: types.Message):
+    text = message.text.strip()
+    uid = message.from_user.id
+    employees = db.list_employees()
+    
+    if "-" in text and text.count("-") == 1:
+        try:
+            parts = text.split("-")
+            start = datetime.strptime(parts[0].strip(), "%d.%m.%Y").date()
+            end = datetime.strptime(parts[1].strip(), "%d.%m.%Y").date()
+        except:
+            await message.answer("❌ Неверный формат. Используйте ДД.ММ.ГГГГ или ДД.ММ.ГГГГ-ДД.ММ.ГГГГ")
+            return
+        days = []
+        d = start
+        while d <= end:
+            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{format_schedule(d, employees)}")
+            d += timedelta(days=1)
+        for i in range(0, len(days), 3):
+            await message.answer("\n\n".join(days[i:i+3]))
+    else:
+        try:
+            d = datetime.strptime(text.strip(), "%d.%m.%Y").date()
+        except:
+            await message.answer("❌ Неверный формат. Используйте ДД.ММ.ГГГГ")
+            return
+        await show_schedule(message, d, employees)
+    
+    if uid in user_data:
+        del user_data[uid]
+
+@dp.message(Command("date_schedule"))
+async def cmd_date_schedule(message: types.Message):
+    if not await admin_only(message):
+        return
+    user_data[message.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
+    await message.answer("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
+
+def format_schedule(for_date, employees):
+    date_str = for_date.strftime("%Y-%m-%d")
+    overrides_raw = db.list_overrides_for_date(date_str)
+    overrides = set()
+    for o in overrides_raw:
+        emp = next((e for e in employees if e[1] == o[1]), None)
+        if emp:
+            overrides.add((emp[0], date_str, o[3]))
+    
+    day_workers = list(set(get_day_schedule(for_date, employees, overrides)))
+    night_workers = list(set(get_night_schedule(for_date, employees, overrides)))
+    
+    lines = []
+    lines.append("☀️ День (08:00-20:00):")
+    if day_workers:
+        for w in sorted(day_workers):
+            emp = next((e for e in employees if e[1] == w), None)
+            star = " ⭐️РВ" if emp and (emp[0], date_str, "day") in overrides else ""
+            lines.append(f"   👤 {w}{star}")
+    else:
+        lines.append("   ❌ Нет")
+    lines.append("")
+    lines.append("🌙 Ночь (20:00-08:00):")
+    if night_workers:
+        for w in sorted(night_workers):
+            emp = next((e for e in employees if e[1] == w), None)
+            star = " ⭐️РВ" if emp and (emp[0], date_str, "night") in overrides else ""
+            lines.append(f"   👤 {w}{star}")
+    else:
+        lines.append("   ❌ Нет")
+    return "\n".join(lines)
+
+async def show_schedule(msg, for_date, employees):
+    text = f"📅 Расписание на {for_date.strftime('%d.%m.%Y (%A)')}\n\n{format_schedule(for_date, employees)}"
+    await msg.answer(text)
+
+# ====== ДОБАВЛЕНИЕ СОТРУДНИКА ======
 @dp.message(Command("add_employee"))
 async def cmd_add_employee(message: types.Message):
     if not await admin_only(message):
@@ -72,8 +209,9 @@ async def process_graphic_choice(callback: CallbackQuery):
 @dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'add_employee' and 
             user_data[msg.from_user.id].get('step') == 'waiting_name')
 async def process_employee_name(message: types.Message):
-    user_data[message.from_user.id]['name'] = message.text.strip()
-    user_data[message.from_user.id]['step'] = 'waiting_date'
+    uid = message.from_user.id
+    user_data[uid]['name'] = message.text.strip()
+    user_data[uid]['step'] = 'waiting_date'
     await message.answer("Введите дату начала графика (ДД.ММ.ГГГГ, например 01.03.2025):")
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'add_employee' and 
@@ -99,6 +237,7 @@ async def process_employee_date(message: types.Message):
         await message.answer(f"❌ Сотрудник {data['name']} уже существует.")
     del user_data[uid]
 
+# ====== УДАЛЕНИЕ СОТРУДНИКА ======
 @dp.message(Command("remove_employee"))
 async def cmd_remove_employee(message: types.Message):
     if not await admin_only(message):
@@ -124,20 +263,7 @@ async def process_remove_employee(callback: CallbackQuery):
         await callback.message.edit_text("❌ Не найден.")
     await callback.answer()
 
-@dp.message(Command("list_employees"))
-async def cmd_list_employees(message: types.Message):
-    if not await admin_only(message):
-        return
-    employees = db.list_employees()
-    if not employees:
-        await message.answer("📭 Нет сотрудников.")
-        return
-    graphic_names = {"2x2_day": "2×2 день", "24x3": "сутки/3", "2-1-2-3": "2-1-2-3"}
-    lines = ["📋 Список сотрудников:\n"]
-    for emp in employees:
-        lines.append(f"👤 {emp[1]} — {graphic_names.get(emp[2], emp[2])} (с {emp[3]})")
-    await message.answer("\n".join(lines))
-
+# ====== ДОБАВЛЕНИЕ РВ ======
 @dp.message(Command("add_override"))
 async def cmd_add_override(message: types.Message):
     if not await admin_only(message):
@@ -188,6 +314,7 @@ async def process_override_shift(callback: CallbackQuery):
         del user_data[callback.from_user.id]
     await callback.answer()
 
+# ====== УДАЛЕНИЕ РВ ======
 @dp.message(Command("remove_override"))
 async def cmd_remove_override(message: types.Message):
     if not await admin_only(message):
@@ -243,14 +370,13 @@ async def proc_del_ovr(callback: CallbackQuery):
     if callback.from_user.id in user_data:
         del user_data[callback.from_user.id]
 
+# ====== ПОЛУЧАТЕЛИ ======
 @dp.message(Command("add_recipient"))
 async def cmd_add_recipient(message: types.Message):
     if not await admin_only(message):
         return
     user_data[message.from_user.id] = {'action': 'add_recipient', 'step': 'waiting_id'}
-    await message.answer(
-        "Отправьте Telegram ID пользователя (цифры) или перешлите его сообщение."
-    )
+    await message.answer("Отправьте Telegram ID или перешлите сообщение пользователя.")
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'add_recipient' and 
             user_data[msg.from_user.id].get('step') == 'waiting_id')
@@ -265,7 +391,7 @@ async def process_recipient_id(message: types.Message):
         user_id_to_add = int(message.text.strip())
         name = f"User {user_id_to_add}"
     else:
-        await message.answer("❌ Не удалось определить ID.")
+        await message.answer("❌ Не удалось определить ID. Пришлите ID цифрами или перешлите сообщение.")
         return
     success = db.add_recipient(user_id_to_add, name)
     if success:
@@ -307,111 +433,7 @@ async def cmd_list_recipients(message: types.Message):
         lines.append(f"👤 {r[1]} (ID: {r[0]})")
     await message.answer("\n".join(lines))
 
-@dp.message(Command("schedule"))
-async def cmd_schedule(message: types.Message):
-    if not await admin_only(message):
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Сегодня", callback_data="sched_today")],
-        [InlineKeyboardButton(text="📅 Завтра", callback_data="sched_tomorrow")],
-        [InlineKeyboardButton(text="📅 Неделя", callback_data="sched_week")],
-        [InlineKeyboardButton(text="📅 Выбрать дату", callback_data="sched_custom")],
-    ])
-    await message.answer("Выберите период:", reply_markup=kb)
-
-@dp.callback_query(lambda c: c.data.startswith("sched_"))
-async def process_schedule_query(callback: CallbackQuery):
-    employees = db.list_employees()
-    if not employees:
-        await callback.message.edit_text("📭 Нет сотрудников.")
-        await callback.answer()
-        return
-    today = date.today()
-    if callback.data == "sched_today":
-        await show_schedule(callback.message, today, employees)
-    elif callback.data == "sched_tomorrow":
-        await show_schedule(callback.message, today + timedelta(days=1), employees)
-    elif callback.data == "sched_week":
-        days = []
-        for i in range(7):
-            d = today + timedelta(days=i)
-            s = format_schedule(d, employees)
-            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{s}")
-        for i in range(0, len(days), 3):
-            await callback.message.answer("\n\n".join(days[i:i+3]))
-    elif callback.data == "sched_custom":
-        user_data[callback.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
-        await callback.message.edit_text("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
-    await callback.answer()
-
-@dp.message(lambda msg: user_data.get(msg.from_user.id, {}).get('action') == 'schedule_custom')
-async def process_custom_schedule(message: types.Message):
-    text = message.text.strip()
-    uid = message.from_user.id
-    employees = db.list_employees()
-    if "-" in text and text.count("-") == 1:
-        try:
-            start = datetime.strptime(text.split("-")[0].strip(), "%d.%m.%Y").date()
-            end = datetime.strptime(text.split("-")[1].strip(), "%d.%m.%Y").date()
-        except:
-            await message.answer("❌ Неверный формат.")
-            return
-        days = []
-        d = start
-        while d <= end:
-            days.append(f"━━━ {d.strftime('%d.%m.%Y (%A)')} ━━━\n{format_schedule(d, employees)}")
-            d += timedelta(days=1)
-        for i in range(0, len(days), 3):
-            await message.answer("\n\n".join(days[i:i+3]))
-    else:
-        try:
-            d = datetime.strptime(text.strip(), "%d.%m.%Y").date()
-        except:
-            await message.answer("❌ Неверный формат.")
-            return
-        await show_schedule(message, d, employees)
-    if uid in user_data:
-        del user_data[uid]
-
-@dp.message(Command("date_schedule"))
-async def cmd_date_schedule(message: types.Message):
-    if not await admin_only(message):
-        return
-    user_data[message.from_user.id] = {'action': 'schedule_custom', 'step': 'waiting'}
-    await message.answer("Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
-
-def format_schedule(for_date, employees):
-    date_str = for_date.strftime("%Y-%m-%d")
-    overrides_raw = db.list_overrides_for_date(date_str)
-    overrides = set()
-    for o in overrides_raw:
-        emp = next((e for e in employees if e[1] == o[1]), None)
-        if emp:
-            overrides.add((emp[0], date_str, o[3]))
-    day_workers = list(set(get_day_schedule(for_date, employees, overrides)))
-    night_workers = list(set(get_night_schedule(for_date, employees, overrides)))
-    def is_ov(name, shift):
-        emp = next((e for e in employees if e[1] == name), None)
-        return emp and (emp[0], date_str, shift) in overrides
-    lines = []
-    lines.append("☀️ День (08:00-20:00):")
-    if day_workers:
-        for w in sorted(day_workers):
-            lines.append(f"   👤 {w}{' ⭐️РВ' if is_ov(w,'day') else ''}")
-    else:
-        lines.append("   ❌ Нет")
-    lines.append("")
-    lines.append("🌙 Ночь (20:00-08:00):")
-    if night_workers:
-        for w in sorted(night_workers):
-            lines.append(f"   👤 {w}{' ⭐️РВ' if is_ov(w,'night') else ''}")
-    else:
-        lines.append("   ❌ Нет")
-    return "\n".join(lines)
-
-async def show_schedule(msg, for_date, employees):
-    await msg.answer(f"📅 Расписание на {for_date.strftime('%d.%m.%Y (%A)')}\n\n{format_schedule(for_date, employees)}")
-
+# ====== РАССЫЛКИ ======
 async def send_morning_schedule():
     today = date.today()
     employees = db.list_employees()
@@ -426,26 +448,26 @@ async def send_morning_schedule():
             overrides.add((emp[0], date_str, o[3]))
     day_workers = list(set(get_day_schedule(today, employees, overrides)))
     night_workers = list(set(get_night_schedule(today, employees, overrides)))
-    def is_ov(name, shift):
-        emp = next((e for e in employees if e[1] == name), None)
-        return emp and (emp[0], date_str, shift) in overrides
+    
     text = f"🌅 Доброе утро! Расписание на {today.strftime('%d.%m.%Y')}\n\n☀️ День (08:00-20:00):\n"
     if day_workers:
         for w in sorted(day_workers):
-            text += f"   👤 {w}{' ⭐️РВ' if is_ov(w,'day') else ''}\n"
+            text += f"   👤 {w}\n"
     else:
         text += "   ❌ Нет\n"
     text += "\n🌙 Ночь (20:00-08:00):\n"
     if night_workers:
         for w in sorted(night_workers):
-            text += f"   👤 {w}{' ⭐️РВ' if is_ov(w,'night') else ''}\n"
+            text += f"   👤 {w}\n"
     else:
         text += "   ❌ Нет\n"
-    for r in db.list_recipients():
+    
+    recipients = db.list_recipients()
+    for r in recipients:
         try:
             await bot.send_message(r[0], text)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
 
 async def send_evening_schedule():
     today = date.today()
@@ -453,6 +475,7 @@ async def send_evening_schedule():
     employees = db.list_employees()
     if not employees:
         return
+    
     date_str = today.strftime("%Y-%m-%d")
     overrides_raw = db.list_overrides_for_date(date_str)
     overrides = set()
@@ -461,6 +484,7 @@ async def send_evening_schedule():
         if emp:
             overrides.add((emp[0], date_str, o[3]))
     night_workers = list(set(get_night_schedule(today, employees, overrides)))
+    
     tomorrow_str = tomorrow.strftime("%Y-%m-%d")
     overrides_t = db.list_overrides_for_date(tomorrow_str)
     overrides_tomorrow = set()
@@ -469,6 +493,7 @@ async def send_evening_schedule():
         if emp:
             overrides_tomorrow.add((emp[0], tomorrow_str, o[3]))
     tomorrow_day = list(set(get_day_schedule(tomorrow, employees, overrides_tomorrow)))
+    
     text = f"🌆 Добрый вечер!\n\n🌙 Сегодня ночью (20:00-08:00):\n"
     if night_workers:
         for w in sorted(night_workers):
@@ -481,11 +506,13 @@ async def send_evening_schedule():
             text += f"   👤 {w}\n"
     else:
         text += "   ❌ Нет\n"
-    for r in db.list_recipients():
+    
+    recipients = db.list_recipients()
+    for r in recipients:
         try:
             await bot.send_message(r[0], text)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
 
 async def on_startup():
     scheduler.add_job(send_morning_schedule, "cron", hour=7, minute=0)
