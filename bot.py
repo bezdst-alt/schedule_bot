@@ -88,6 +88,65 @@ async def back_to_main(callback):
     await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
     await callback.answer()
 
+# ==================== КОМАНДА ДЛЯ ПОЛУЧАТЕЛЕЙ ====================
+
+@dp.message(Command("week"))
+async def cmd_week(message: types.Message):
+    user_id = message.from_user.id
+    recipients = db.list_recipients()
+    is_recipient = any(r[0] == user_id for r in recipients)
+    is_admin_user = is_admin(user_id)
+    
+    if not is_recipient and not is_admin_user:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
+    
+    employees = db.list_employees()
+    if not employees:
+        await message.answer("Нет сотрудников в базе.")
+        return
+    
+    text = format_week_schedule(date.today(), employees)
+    await message.answer(text)
+
+# ==================== КНОПКИ ДЛЯ ПОЛУЧАТЕЛЕЙ ====================
+
+@dp.callback_query(lambda c: c.data == "recipient_week")
+async def recipient_week(callback):
+    user_id = callback.from_user.id
+    recipients = db.list_recipients()
+    is_recipient = any(r[0] == user_id for r in recipients)
+    is_admin_user = is_admin(user_id)
+    
+    if not is_recipient and not is_admin_user:
+        await callback.message.edit_text("У вас нет доступа.")
+        await callback.answer()
+        return
+    
+    employees = db.list_employees()
+    if not employees:
+        await callback.message.edit_text("Нет сотрудников в базе.")
+        await callback.answer()
+        return
+    
+    text = format_week_schedule(date.today(), employees)
+    await callback.message.answer(text)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "recipient_unsubscribe")
+async def recipient_unsubscribe(callback):
+    user_id = callback.from_user.id
+    
+    db.remove_recipient(user_id)
+    
+    goodbye_text = (
+        "🚫 **Вы отписались от ежедневной рассылки расписания.**\n\n"
+        "Если захотите снова получать расписание — свяжитесь с администратором. 😊"
+    )
+    
+    await callback.message.edit_text(goodbye_text)
+    await callback.answer()
+
 # ==================== СОТРУДНИКИ ====================
 
 def employees_menu():
@@ -569,6 +628,9 @@ async def rec_add_process(message):
                 "Я бот службы эксплуатации ФФ Порошкино. 🤖\n\n"
                 "📅 Я буду отправлять тебе расписание смен твоих коллег "
                 "каждое утро в **07:00** и вечером в **19:00**.\n\n"
+                "📋 Также ты можешь запросить расписание на текущую неделю "
+                "в любой момент — просто отправь команду **/week** "
+                "или нажми кнопку в сообщении с расписанием.\n\n"
                 "Спасибо что с нами! 😊"
             )
             await bot.send_message(uid_to_add, welcome_text)
@@ -651,9 +713,16 @@ async def send_morning_schedule():
             text += f"  👤 {w}\n"
     else:
         text += "  ❌ Нет\n"
+    
+    # Кнопки для получателей
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Расписание на неделю", callback_data="recipient_week")],
+        [InlineKeyboardButton(text="🚫 Отписаться от рассылки", callback_data="recipient_unsubscribe")],
+    ])
+    
     for r in db.list_recipients():
         try:
-            await bot.send_message(r[0], text)
+            await bot.send_message(r[0], text, reply_markup=kb)
         except:
             pass
 
@@ -691,9 +760,16 @@ async def send_evening_schedule():
             text += f"  👤 {w}\n"
     else:
         text += "  ❌ Нет\n"
+    
+    # Кнопки для получателей
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Расписание на неделю", callback_data="recipient_week")],
+        [InlineKeyboardButton(text="🚫 Отписаться от рассылки", callback_data="recipient_unsubscribe")],
+    ])
+    
     for r in db.list_recipients():
         try:
-            await bot.send_message(r[0], text)
+            await bot.send_message(r[0], text, reply_markup=kb)
         except:
             pass
 
