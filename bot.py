@@ -31,16 +31,11 @@ async def admin_only(message):
 user_data = {}
 
 def detect_graphic(text):
-    """Определяет тип графика по любому тексту"""
     t = text.lower().strip()
-    # 2-1-2-3
     if "2-1-2-3" in t or "2123" in t:
         return "2-1-2-3"
-    # сутки
     if "сутк" in t:
         return "24x3"
-    # 2x2 день, 2×2 день, 2х2 день — любой вариант
-    # Убираем символ × и х, заменяем на x
     t_clean = t.replace("×", "x").replace("х", "x").replace(" ", "")
     if "2x2" in t_clean:
         return "2x2_day"
@@ -72,9 +67,9 @@ def fmt_date_full(d):
 def main_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Сотрудники", callback_data="menu_employees")],
-        [InlineKeyboardButton(text="⭐ PB (Работа в выходной)", callback_data="menu_overrides")],
+        [InlineKeyboardButton(text="⭐ PB", callback_data="menu_overrides")],
         [InlineKeyboardButton(text="📅 Расписание", callback_data="menu_schedule")],
-        [InlineKeyboardButton(text="📢 Получатели рассылки", callback_data="menu_recipients")],
+        [InlineKeyboardButton(text="📢 Получатели", callback_data="menu_recipients")],
     ])
     return kb
 
@@ -102,14 +97,14 @@ def employees_menu():
         [InlineKeyboardButton(text="➕ Добавить одного", callback_data="emp_add")],
         [InlineKeyboardButton(text="👥 Добавить несколько", callback_data="emp_bulk")],
         [InlineKeyboardButton(text="📋 Список сотрудников", callback_data="emp_list")],
-        [InlineKeyboardButton(text="🗑 Удалить сотрудника", callback_data="emp_remove")],
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu_main")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="emp_remove")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
     return kb
 
 @dp.callback_query(lambda c: c.data == "menu_employees")
 async def menu_employees(callback):
-    await callback.message.edit_text("👤 Управление сотрудниками:", reply_markup=employees_menu())
+    await callback.message.edit_text("👤 Сотрудники:", reply_markup=employees_menu())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "emp_list")
@@ -167,9 +162,9 @@ async def emp_add_date(message):
     data = user_data[uid]
     ok = db.add_employee(data['name'], data['graphic_type'], dt.strftime("%Y-%m-%d"))
     if ok:
-        await message.answer(f"✅ Сотрудник {data['name']} добавлен!", reply_markup=employees_menu())
+        await message.answer(f"✅ {data['name']} добавлен!", reply_markup=employees_menu())
     else:
-        await message.answer(f"❌ Сотрудник {data['name']} уже существует.", reply_markup=employees_menu())
+        await message.answer(f"❌ {data['name']} уже существует.", reply_markup=employees_menu())
     del user_data[uid]
 
 @dp.callback_query(lambda c: c.data == "emp_bulk")
@@ -177,14 +172,10 @@ async def emp_bulk(callback):
     user_data[callback.from_user.id] = {'action':'bulk_add'}
     await callback.message.edit_text(
         "📋 **Массовое добавление**\n\n"
-        "Отправьте список в формате:\n"
-        "```\n"
-        "Имя - график (с ГГГГ-ММ-ДД)\n"
-        "```\n\n"
-        "Примеры:\n"
-        "Ярослав Соколов - 2x2 день (с 2026-08-07)\n"
-        "Иван Иванов - 2-1-2-3 (с 2026-08-01)\n"
-        "Петр Петров - сутки/3 (с 2026-08-05)"
+        "Формат:\n"
+        "Имя - график (с ГГГГ-ММ-ДД)\n\n"
+        "Пример:\n"
+        "Ярослав Соколов - 2x2 день (с 2026-08-07)"
     )
     await callback.answer()
 
@@ -206,12 +197,10 @@ async def emp_bulk_process(message):
         name = m.group(1).strip()
         gt_raw = m.group(2).strip()
         ds = m.group(3).strip()
-        
         gtype = detect_graphic(gt_raw)
         if not gtype:
-            errors.append(f"❌ Строка {i+1}: неизвестный график «{gt_raw}»")
+            errors.append(f"❌ Строка {i+1}: неизвестный график")
             continue
-        
         try:
             pd = datetime.strptime(ds, "%Y-%m-%d")
         except:
@@ -242,7 +231,7 @@ async def emp_remove(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"❌ {e[1]}", callback_data=f"rememp_{e[0]}")] for e in employees
     ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu_employees")]])
-    await callback.message.edit_text("🗑 Выберите сотрудника для удаления:", reply_markup=kb)
+    await callback.message.edit_text("🗑 Выберите:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("rememp_"))
@@ -261,33 +250,33 @@ def overrides_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Добавить РВ", callback_data="ov_add")],
         [InlineKeyboardButton(text="❌ Удалить РВ", callback_data="ov_remove")],
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu_main")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
     return kb
 
 @dp.callback_query(lambda c: c.data == "menu_overrides")
 async def menu_overrides(callback):
-    await callback.message.edit_text("⭐ Управление РВ:", reply_markup=overrides_menu())
+    await callback.message.edit_text("⭐ РВ:", reply_markup=overrides_menu())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "ov_add")
 async def ov_add(callback):
     employees = db.list_employees()
     if not employees:
-        await callback.message.edit_text("📭 Сначала добавьте сотрудников.", reply_markup=back_button())
+        await callback.message.edit_text("📭 Нет сотрудников.", reply_markup=back_button())
         await callback.answer()
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=e[1], callback_data=f"ovemp_{e[0]}")] for e in employees
     ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu_overrides")]])
-    await callback.message.edit_text("⭐ Выберите сотрудника для РВ:", reply_markup=kb)
+    await callback.message.edit_text("⭐ Выберите:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("ovemp_"))
 async def ov_add_emp(callback):
     eid = int(callback.data.replace("ovemp_",""))
     user_data[callback.from_user.id] = {'action':'add_ov','eid':eid,'step':'date'}
-    await callback.message.edit_text("📅 Введите дату РВ (ДД.ММ.ГГГГ):")
+    await callback.message.edit_text("📅 Дата РВ (ДД.ММ.ГГГГ):")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='add_ov' and user_data[msg.from_user.id].get('step')=='date')
@@ -304,7 +293,7 @@ async def ov_add_date(message):
         [InlineKeyboardButton(text="☀️ Дневная", callback_data="ovs_day")],
         [InlineKeyboardButton(text="🌙 Ночная", callback_data="ovs_night")],
     ])
-    await message.answer("⭐ Тип смены:", reply_markup=kb)
+    await message.answer("⭐ Тип:", reply_markup=kb)
 
 @dp.callback_query(lambda c: c.data.startswith("ovs_"))
 async def ov_add_shift(callback):
@@ -330,14 +319,14 @@ async def ov_remove(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=e[1], callback_data=f"rovemp_{e[0]}")] for e in employees
     ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu_overrides")]])
-    await callback.message.edit_text("🗑 Выберите сотрудника:", reply_markup=kb)
+    await callback.message.edit_text("🗑 Выберите:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("rovemp_"))
 async def ov_remove_emp(callback):
     eid = int(callback.data.replace("rovemp_",""))
     user_data[callback.from_user.id] = {'action':'remove_ov','eid':eid,'step':'date'}
-    await callback.message.edit_text("📅 Введите дату (ДД.ММ.ГГГГ):")
+    await callback.message.edit_text("📅 Дата (ДД.ММ.ГГГГ):")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='remove_ov' and user_data[msg.from_user.id].get('step')=='date')
@@ -382,7 +371,8 @@ def schedule_menu():
         [InlineKeyboardButton(text="🌤 Завтра", callback_data="sched_tomorrow")],
         [InlineKeyboardButton(text="📅 Неделя", callback_data="sched_week")],
         [InlineKeyboardButton(text="📆 Выбрать дату", callback_data="sched_custom")],
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu_main")],
+        [InlineKeyboardButton(text="📨 Отправить рассылку сейчас", callback_data="sched_send_now")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
     return kb
 
@@ -405,9 +395,13 @@ async def sched_process(callback):
         await show_schedule(callback.message, today + timedelta(days=1), employees)
     elif callback.data == "sched_week":
         await callback.message.edit_text(format_week_schedule(today, employees), reply_markup=back_button())
+    elif callback.data == "sched_send_now":
+        await send_morning_schedule()
+        await callback.message.edit_text("✅ Рассылка отправлена всем получателям!", reply_markup=back_button())
+        await callback.answer()
     elif callback.data == "sched_custom":
         user_data[callback.from_user.id] = {'action':'sched_custom'}
-        await callback.message.edit_text("📆 Введите дату (ДД.ММ.ГГГГ) или диапазон (ДД.ММ.ГГГГ-ДД.ММ.ГГГГ):")
+        await callback.message.edit_text("📆 Введите дату (ДД.ММ.ГГГГ) или диапазон:")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='sched_custom')
@@ -431,7 +425,7 @@ async def sched_custom_process(message):
             d += timedelta(days=1)
         for i in range(0, len(days), 3):
             await message.answer("\n\n".join(days[i:i+3]))
-        await message.answer("✅ Расписание готово!", reply_markup=schedule_menu())
+        await message.answer("✅ Готово!", reply_markup=schedule_menu())
         if uid in user_data: del user_data[uid]
         return
     try:
@@ -521,22 +515,22 @@ def format_week_schedule(start_date, employees):
 
 def recipients_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить получателя", callback_data="rec_add")],
-        [InlineKeyboardButton(text="🗑 Удалить получателя", callback_data="rec_remove")],
-        [InlineKeyboardButton(text="📋 Список получателей", callback_data="rec_list")],
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu_main")],
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="rec_add")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="rec_remove")],
+        [InlineKeyboardButton(text="📋 Список", callback_data="rec_list")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
     return kb
 
 @dp.callback_query(lambda c: c.data == "menu_recipients")
 async def menu_recipients(callback):
-    await callback.message.edit_text("📢 Получатели рассылки:", reply_markup=recipients_menu())
+    await callback.message.edit_text("📢 Получатели:", reply_markup=recipients_menu())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "rec_add")
 async def rec_add(callback):
     user_data[callback.from_user.id] = {'action':'add_recip','step':'id'}
-    await callback.message.edit_text("📢 Отправьте Telegram ID или перешлите сообщение пользователя:")
+    await callback.message.edit_text("📢 Пришлите Telegram ID или перешлите сообщение:")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='add_recip' and user_data[msg.from_user.id].get('step')=='id')
@@ -551,7 +545,7 @@ async def rec_add_process(message):
         uid_to_add = int(message.text.strip())
         name = f"User {uid_to_add}"
     else:
-        await message.answer("❌ Не удалось определить ID.", reply_markup=recipients_menu())
+        await message.answer("❌ Ошибка.", reply_markup=recipients_menu())
         del user_data[uid]
         return
     ok = db.add_recipient(uid_to_add, name)
@@ -582,14 +576,14 @@ async def rec_remove(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"❌ {r[1] or str(r[0])}", callback_data=f"remrec_{r[0]}")] for r in recipients
     ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu_recipients")]])
-    await callback.message.edit_text("🗑 Выберите получателя:", reply_markup=kb)
+    await callback.message.edit_text("🗑 Выберите:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("remrec_"))
 async def rec_remove_process(callback):
     uid = int(callback.data.replace("remrec_",""))
     db.remove_recipient(uid)
-    await callback.message.edit_text("🗑 Получатель удален.", reply_markup=recipients_menu())
+    await callback.message.edit_text("🗑 Удален.", reply_markup=recipients_menu())
     await callback.answer()
 
 # ==================== РАССЫЛКИ ====================
