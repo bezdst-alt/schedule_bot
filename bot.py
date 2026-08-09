@@ -144,7 +144,6 @@ async def recipient_week(callback):
 async def recipient_unsubscribe(callback):
     user_id = callback.from_user.id
     
-    # Получаем имя пользователя до удаления
     user_name = f"User {user_id}"
     try:
         user = await bot.get_chat(user_id)
@@ -161,7 +160,6 @@ async def recipient_unsubscribe(callback):
     
     await callback.message.edit_text(goodbye_text)
     
-    # Уведомление админу
     try:
         await bot.send_message(
             config.YOUR_TELEGRAM_ID,
@@ -191,15 +189,19 @@ async def menu_employees(callback):
 
 @dp.callback_query(lambda c: c.data == "emp_list")
 async def emp_list(callback):
+    """Показывает список сотрудников в формате для копирования (без эмодзи)"""
     employees = db.list_employees()
     if not employees:
         await callback.message.edit_text("📭 Нет сотрудников.", reply_markup=back_button())
         await callback.answer()
         return
-    lines = ["📋 Список сотрудников:"]
+    # Формат для копирования: Имя - график (с ГГГГ-ММ-ДД)
+    lines = ["📋 Список сотрудников (можно копировать):\n"]
     for e in employees:
-        emoji = GRAPHIC_EMOJIS.get(e[2], "👤")
-        lines.append(f"{emoji} {e[1]} - {GRAPHIC_NAMES.get(e[2],e[2])} (c {e[3]})")
+        name = e[1]
+        gtype = GRAPHIC_NAMES.get(e[2], e[2])
+        start = e[3]
+        lines.append(f"{name} — {gtype} (с {start})")
     await callback.message.edit_text("\n".join(lines), reply_markup=back_button())
     await callback.answer()
 
@@ -648,7 +650,6 @@ async def rec_add_process(message):
     if ok:
         await message.answer(f"✅ Получатель добавлен! {name} (ID: {uid_to_add})", reply_markup=recipients_menu())
         
-        # Уведомление админу о добавлении
         try:
             await bot.send_message(
                 config.YOUR_TELEGRAM_ID,
@@ -714,7 +715,6 @@ async def rec_remove_process(callback):
     except:
         pass
     
-    # Уведомление админу
     try:
         await bot.send_message(
             config.YOUR_TELEGRAM_ID,
@@ -745,13 +745,17 @@ async def send_morning_schedule():
     text = f"Доброе утро! Расписание на {fmt_date_full(today)}\n\n☀️ День (08-20):\n"
     if day_w:
         for w in sorted(day_w):
-            text += f"  👤 {w}\n"
+            emp = next((e for e in employees if e[1]==w), None)
+            s = " ⭐РВ" if emp and (emp[0],ds,"day") in overrides else ""
+            text += f"  👤 {w}{s}\n"
     else:
         text += "  ❌ Нет\n"
     text += "\n🌙 Ночь (20-08):\n"
     if night_w:
         for w in sorted(night_w):
-            text += f"  👤 {w}\n"
+            emp = next((e for e in employees if e[1]==w), None)
+            s = " ⭐РВ" if emp and (emp[0],ds,"night") in overrides else ""
+            text += f"  👤 {w}{s}\n"
     else:
         text += "  ❌ Нет\n"
     
@@ -786,13 +790,17 @@ async def send_evening_schedule():
     text = f"Добрый вечер!\n\n🌙 Сегодня ночью (20-08):\n"
     if night_w:
         for w in sorted(night_w):
-            text += f"  👤 {w}\n"
+            emp = next((e for e in employees if e[1]==w), None)
+            s = " ⭐РВ" if emp and (emp[0],ds,"night") in overrides else ""
+            text += f"  👤 {w}{s}\n"
     else:
         text += "  ❌ Нет\n"
     text += f"\n☀️ Завтра днем ({fmt_date_full(tomorrow)}):\n"
     if day_w:
         for w in sorted(day_w):
-            text += f"  👤 {w}\n"
+            emp = next((e for e in employees if e[1]==w), None)
+            s = " ⭐РВ" if emp and (emp[0],tms,"day") in overrides else ""
+            text += f"  👤 {w}{s}\n"
     else:
         text += "  ❌ Нет\n"
     
@@ -803,8 +811,8 @@ async def send_evening_schedule():
             pass
 
 async def on_startup():
-    scheduler.add_job(send_morning_schedule, "cron", hour=7, minute=0)
-    scheduler.add_job(send_evening_schedule, "cron", hour=19, minute=0)
+    scheduler.add_job(send_morning_schedule, "cron", hour=7, minute=0, timezone="Etc/GMT-3")
+    scheduler.add_job(send_evening_schedule, "cron", hour=19, minute=0, timezone="Etc/GMT-3")
     scheduler.start()
 
 async def main():
