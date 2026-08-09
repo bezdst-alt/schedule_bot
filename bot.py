@@ -530,7 +530,13 @@ async def menu_recipients(callback):
 @dp.callback_query(lambda c: c.data == "rec_add")
 async def rec_add(callback):
     user_data[callback.from_user.id] = {'action':'add_recip','step':'id'}
-    await callback.message.edit_text("📢 Пришлите Telegram ID или перешлите сообщение:")
+    await callback.message.edit_text(
+        "📢 **Добавление получателя**\n\n"
+        "Отправьте одним из способов:\n"
+        "• ID цифрами — например: 123456789\n"
+        "• Username с @ — например: @ivanivanov\n"
+        "• Или перешлите сообщение от пользователя"
+    )
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='add_recip' and user_data[msg.from_user.id].get('step')=='id')
@@ -538,19 +544,44 @@ async def rec_add_process(message):
     uid = message.from_user.id
     uid_to_add = None
     name = ""
+    
+    # Способ 1: Пересланное сообщение
     if message.forward_from:
         uid_to_add = message.forward_from.id
         name = message.forward_from.full_name or f"User {uid_to_add}"
+    
+    # Способ 2: Просто цифры (Telegram ID)
     elif message.text and message.text.strip().isdigit():
         uid_to_add = int(message.text.strip())
         name = f"User {uid_to_add}"
+    
+    # Способ 3: username (начинается с @)
+    elif message.text and message.text.strip().startswith("@"):
+        username = message.text.strip()[1:]
+        try:
+            chat = await bot.get_chat(f"@{username}")
+            uid_to_add = chat.id
+            name = chat.full_name or username
+        except:
+            await message.answer("❌ Не удалось найти пользователя. Проверьте username.", reply_markup=recipients_menu())
+            del user_data[uid]
+            return
+    
     else:
-        await message.answer("❌ Ошибка.", reply_markup=recipients_menu())
+        await message.answer(
+            "❌ Не удалось определить получателя.\n\n"
+            "Отправьте:\n"
+            "• ID цифрами (123456789)\n"
+            "• Username с @ (@ivanivanov)\n"
+            "• Или перешлите сообщение от пользователя",
+            reply_markup=recipients_menu()
+        )
         del user_data[uid]
         return
+    
     ok = db.add_recipient(uid_to_add, name)
     if ok:
-        await message.answer(f"✅ Получатель добавлен! ID: {uid_to_add}", reply_markup=recipients_menu())
+        await message.answer(f"✅ Получатель добавлен! {name} (ID: {uid_to_add})", reply_markup=recipients_menu())
     else:
         await message.answer("❌ Ошибка.", reply_markup=recipients_menu())
     del user_data[uid]
