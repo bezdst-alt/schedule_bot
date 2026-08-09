@@ -62,8 +62,6 @@ def fmt_date(d):
 def fmt_date_full(d):
     return f"{WEEKDAYS_RU[d.weekday()]}, {fmt_date(d)}"
 
-# ==================== ГЛАВНОЕ МЕНЮ ====================
-
 def main_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Сотрудники", callback_data="menu_employees")],
@@ -170,13 +168,7 @@ async def emp_add_date(message):
 @dp.callback_query(lambda c: c.data == "emp_bulk")
 async def emp_bulk(callback):
     user_data[callback.from_user.id] = {'action':'bulk_add'}
-    await callback.message.edit_text(
-        "📋 **Массовое добавление**\n\n"
-        "Формат:\n"
-        "Имя - график (с ГГГГ-ММ-ДД)\n\n"
-        "Пример:\n"
-        "Ярослав Соколов - 2x2 день (с 2026-08-07)"
-    )
+    await callback.message.edit_text("📋 Массовое добавление\n\nФормат:\nИмя - график (с ГГГГ-ММ-ДД)")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='bulk_add')
@@ -475,7 +467,6 @@ def format_week_schedule(start_date, employees):
     lines.append("📅 РАСПИСАНИЕ НА НЕДЕЛЮ")
     lines.append("С " + fmt_date(start_date))
     lines.append("")
-    
     for i in range(7):
         d = start_date + timedelta(days=i)
         date_str = d.strftime("%Y-%m-%d")
@@ -487,7 +478,6 @@ def format_week_schedule(start_date, employees):
                 overrides.add((emp[0], date_str, o[3]))
         day_workers = list(set(get_day_schedule(d, employees, overrides)))
         night_workers = list(set(get_night_schedule(d, employees, overrides)))
-        
         lines.append("━" * 30)
         lines.append(fmt_date_full(d))
         lines.append("")
@@ -508,7 +498,6 @@ def format_week_schedule(start_date, employees):
         else:
             lines.append("  ❌ Нет")
         lines.append("")
-    
     return "\n".join(lines)
 
 # ==================== ПОЛУЧАТЕЛИ ====================
@@ -545,17 +534,12 @@ async def rec_add_process(message):
     uid_to_add = None
     name = ""
     
-    # Способ 1: Пересланное сообщение
     if message.forward_from:
         uid_to_add = message.forward_from.id
         name = message.forward_from.full_name or f"User {uid_to_add}"
-    
-    # Способ 2: Просто цифры (Telegram ID)
     elif message.text and message.text.strip().isdigit():
         uid_to_add = int(message.text.strip())
         name = f"User {uid_to_add}"
-    
-    # Способ 3: username (начинается с @)
     elif message.text and message.text.strip().startswith("@"):
         username = message.text.strip()[1:]
         try:
@@ -563,25 +547,33 @@ async def rec_add_process(message):
             uid_to_add = chat.id
             name = chat.full_name or username
         except:
-            await message.answer("❌ Не удалось найти пользователя. Проверьте username.", reply_markup=recipients_menu())
+            await message.answer(
+                f"❌ Не удалось найти пользователя @{username}.\n\n"
+                f"Попросите его сначала написать боту любое сообщение, "
+                f"а потом попробуйте снова.",
+                reply_markup=recipients_menu()
+            )
             del user_data[uid]
             return
-    
     else:
-        await message.answer(
-            "❌ Не удалось определить получателя.\n\n"
-            "Отправьте:\n"
-            "• ID цифрами (123456789)\n"
-            "• Username с @ (@ivanivanov)\n"
-            "• Или перешлите сообщение от пользователя",
-            reply_markup=recipients_menu()
-        )
+        await message.answer("❌ Не удалось определить получателя.", reply_markup=recipients_menu())
         del user_data[uid]
         return
     
     ok = db.add_recipient(uid_to_add, name)
     if ok:
         await message.answer(f"✅ Получатель добавлен! {name} (ID: {uid_to_add})", reply_markup=recipients_menu())
+        try:
+            welcome_text = (
+                "👋 **Привет!**\n\n"
+                "Я бот службы эксплуатации ФФ Порошкино. 🤖\n\n"
+                "📅 Я буду отправлять тебе расписание смен твоих коллег "
+                "каждое утро в **07:00** и вечером в **19:00**.\n\n"
+                "Спасибо что с нами! 😊"
+            )
+            await bot.send_message(uid_to_add, welcome_text)
+        except:
+            pass
     else:
         await message.answer("❌ Ошибка.", reply_markup=recipients_menu())
     del user_data[uid]
@@ -613,8 +605,22 @@ async def rec_remove(callback):
 @dp.callback_query(lambda c: c.data.startswith("remrec_"))
 async def rec_remove_process(callback):
     uid = int(callback.data.replace("remrec_",""))
+    recipients = db.list_recipients()
+    recip = next((r for r in recipients if r[0] == uid), None)
+    name = recip[1] if recip else "Пользователь"
+    
     db.remove_recipient(uid)
-    await callback.message.edit_text("🗑 Удален.", reply_markup=recipients_menu())
+    
+    try:
+        goodbye_text = (
+            "🚫 **Вы отключены от получения ежедневной рассылки расписания.**\n\n"
+            "Если захотите снова получать расписание — свяжитесь с администратором. 😊"
+        )
+        await bot.send_message(uid, goodbye_text)
+    except:
+        pass
+    
+    await callback.message.edit_text(f"🗑 {name} удален из получателей.", reply_markup=recipients_menu())
     await callback.answer()
 
 # ==================== РАССЫЛКИ ====================
