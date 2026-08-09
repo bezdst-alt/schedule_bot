@@ -111,6 +111,13 @@ async def cmd_week(message: types.Message):
 
 # ==================== КНОПКИ ДЛЯ ПОЛУЧАТЕЛЕЙ ====================
 
+def recipient_kb():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Расписание на неделю", callback_data="recipient_week")],
+        [InlineKeyboardButton(text="🚫 Отписаться от рассылки", callback_data="recipient_unsubscribe")],
+    ])
+    return kb
+
 @dp.callback_query(lambda c: c.data == "recipient_week")
 async def recipient_week(callback):
     user_id = callback.from_user.id
@@ -137,6 +144,14 @@ async def recipient_week(callback):
 async def recipient_unsubscribe(callback):
     user_id = callback.from_user.id
     
+    # Получаем имя пользователя до удаления
+    user_name = f"User {user_id}"
+    try:
+        user = await bot.get_chat(user_id)
+        user_name = user.full_name or user_name
+    except:
+        pass
+    
     db.remove_recipient(user_id)
     
     goodbye_text = (
@@ -145,6 +160,16 @@ async def recipient_unsubscribe(callback):
     )
     
     await callback.message.edit_text(goodbye_text)
+    
+    # Уведомление админу
+    try:
+        await bot.send_message(
+            config.YOUR_TELEGRAM_ID,
+            f"🚫 Пользователь отписался от рассылки\n👤 {user_name}\n🆔 {user_id}"
+        )
+    except:
+        pass
+    
     await callback.answer()
 
 # ==================== СОТРУДНИКИ ====================
@@ -622,18 +647,25 @@ async def rec_add_process(message):
     ok = db.add_recipient(uid_to_add, name)
     if ok:
         await message.answer(f"✅ Получатель добавлен! {name} (ID: {uid_to_add})", reply_markup=recipients_menu())
+        
+        # Уведомление админу о добавлении
+        try:
+            await bot.send_message(
+                config.YOUR_TELEGRAM_ID,
+                f"➕ Новый получатель рассылки\n👤 {name}\n🆔 {uid_to_add}"
+            )
+        except:
+            pass
+        
         try:
             welcome_text = (
                 "👋 **Привет!**\n\n"
                 "Я бот службы эксплуатации ФФ Порошкино. 🤖\n\n"
                 "📅 Я буду отправлять тебе расписание смен твоих коллег "
                 "каждое утро в **07:00** и вечером в **19:00**.\n\n"
-                "📋 Также ты можешь запросить расписание на текущую неделю "
-                "в любой момент — просто отправь команду **/week** "
-                "или нажми кнопку в сообщении с расписанием.\n\n"
                 "Спасибо что с нами! 😊"
             )
-            await bot.send_message(uid_to_add, welcome_text)
+            await bot.send_message(uid_to_add, welcome_text, reply_markup=recipient_kb())
         except:
             pass
     else:
@@ -682,6 +714,15 @@ async def rec_remove_process(callback):
     except:
         pass
     
+    # Уведомление админу
+    try:
+        await bot.send_message(
+            config.YOUR_TELEGRAM_ID,
+            f"➖ Получатель удален из рассылки\n👤 {name}\n🆔 {uid}"
+        )
+    except:
+        pass
+    
     await callback.message.edit_text(f"🗑 {name} удален из получателей.", reply_markup=recipients_menu())
     await callback.answer()
 
@@ -714,15 +755,9 @@ async def send_morning_schedule():
     else:
         text += "  ❌ Нет\n"
     
-    # Кнопки для получателей
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Расписание на неделю", callback_data="recipient_week")],
-        [InlineKeyboardButton(text="🚫 Отписаться от рассылки", callback_data="recipient_unsubscribe")],
-    ])
-    
     for r in db.list_recipients():
         try:
-            await bot.send_message(r[0], text, reply_markup=kb)
+            await bot.send_message(r[0], text, reply_markup=recipient_kb())
         except:
             pass
 
@@ -761,15 +796,9 @@ async def send_evening_schedule():
     else:
         text += "  ❌ Нет\n"
     
-    # Кнопки для получателей
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Расписание на неделю", callback_data="recipient_week")],
-        [InlineKeyboardButton(text="🚫 Отписаться от рассылки", callback_data="recipient_unsubscribe")],
-    ])
-    
     for r in db.list_recipients():
         try:
-            await bot.send_message(r[0], text, reply_markup=kb)
+            await bot.send_message(r[0], text, reply_markup=recipient_kb())
         except:
             pass
 
