@@ -718,12 +718,19 @@ def format_week_schedule(start_date, employees):
                 overrides.add((emp[0], date_str, o[3]))
         day_workers = list(set(get_day_schedule(d, employees, overrides)))
         night_workers = list(set(get_night_schedule(d, employees, overrides)))
-        lines.append("▪️ " + fmt_date_full(d))
+
+        if i > 0:
+            lines.append("———")
+            lines.append("")
+
+        lines.append("📆 " + fmt_date_full(d))
+        lines.append("")
         lines.append("☀️ День:")
         if day_workers:
             lines.extend(format_workers_list(day_workers, date_str, "day", employees, overrides))
         else:
             lines.append("  ❌ Нет")
+        lines.append("")
         lines.append("🌙 Ночь:")
         if night_workers:
             lines.extend(format_workers_list(night_workers, date_str, "night", employees, overrides))
