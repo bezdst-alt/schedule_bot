@@ -13,6 +13,11 @@ def init_db():
             start_date TEXT NOT NULL
         )
     """)
+    # Добавляем колонку position, если её ещё нет
+    try:
+        c.execute("ALTER TABLE employees ADD COLUMN position TEXT DEFAULT 'specialist'")
+    except:
+        pass
     c.execute("""
         CREATE TABLE IF NOT EXISTS recipients (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,17 +42,25 @@ def init_db():
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
-def add_employee(name, graphic_type, start_date):
+def add_employee(name, graphic_type, start_date, position="specialist"):
     conn = get_connection()
     try:
-        conn.execute("INSERT INTO employees (name, graphic_type, start_date) VALUES (?, ?, ?)",
-                     (name, graphic_type, start_date))
+        conn.execute("INSERT INTO employees (name, graphic_type, start_date, position) VALUES (?, ?, ?, ?)",
+                     (name, graphic_type, start_date, position))
         conn.commit()
         return True
     except:
         return False
     finally:
         conn.close()
+
+def update_position(name, position):
+    conn = get_connection()
+    conn.execute("UPDATE employees SET position = ? WHERE name = ?", (position, name))
+    conn.commit()
+    changed = conn.total_changes > 0
+    conn.close()
+    return changed
 
 def remove_employee(name):
     conn = get_connection()
@@ -58,9 +71,15 @@ def remove_employee(name):
 
 def list_employees():
     conn = get_connection()
-    rows = conn.execute("SELECT id, name, graphic_type, start_date FROM employees ORDER BY name").fetchall()
+    rows = conn.execute("SELECT id, name, graphic_type, start_date, position FROM employees ORDER BY name").fetchall()
     conn.close()
     return rows
+
+def get_employee(employee_id):
+    conn = get_connection()
+    row = conn.execute("SELECT id, name, graphic_type, start_date, position FROM employees WHERE id=?", (employee_id,)).fetchone()
+    conn.close()
+    return row
 
 def add_override(employee_id, date_str, shift_type, reason="РВ"):
     conn = get_connection()
