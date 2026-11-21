@@ -135,16 +135,13 @@ async def cmd_week(message: types.Message):
     recipients = db.list_recipients()
     is_recipient = any(r[0] == user_id for r in recipients)
     is_admin_user = is_admin(user_id)
-    
     if not is_recipient and not is_admin_user:
         await message.answer("У вас нет доступа к этой команде.")
         return
-    
     employees = db.list_employees()
     if not employees:
         await message.answer("Нет сотрудников в базе.")
         return
-    
     text = format_week_schedule(date.today(), employees)
     await message.answer(text)
 
@@ -161,18 +158,15 @@ async def recipient_week(callback):
     recipients = db.list_recipients()
     is_recipient = any(r[0] == user_id for r in recipients)
     is_admin_user = is_admin(user_id)
-    
     if not is_recipient and not is_admin_user:
         await callback.message.edit_text("У вас нет доступа.")
         await callback.answer()
         return
-    
     employees = db.list_employees()
     if not employees:
         await callback.message.edit_text("Нет сотрудников в базе.")
         await callback.answer()
         return
-    
     text = format_week_schedule(date.today(), employees)
     await callback.message.answer(text)
     await callback.answer()
@@ -227,10 +221,10 @@ async def emp_list(callback):
         await callback.message.edit_text("📭 Нет сотрудников.", reply_markup=back_button())
         await callback.answer()
         return
-    lines = ["📋 Список сотрудников (можно копировать):\n"]
+    lines = ["📋 Список сотрудников (можно копировать):", ""]
     sorted_emps = sorted(employees, key=lambda e: (position_info(e[4])[2], e[1]))
     for e in sorted_emps:
-        name = e[1]
+        name = e[1].strip()
         gtype = GRAPHIC_NAMES.get(e[2], e[2])
         start = e[3]
         pos_name = position_info(e[4])[0]
@@ -312,7 +306,8 @@ async def emp_bulk(callback):
         "Пример:\n"
         "Иван Иванов — 2-1-2-3 — Главный механик (с 2026-08-01)\n"
         "Пётр Петров — 2x2 день — Специалист (с 2026-08-05)\n\n"
-        "Должности: Главный механик, Инженер КИПиА, Электромеханик, Специалист"
+        "Должности: Главный механик, Инженер КИПиА, Электромеханик, Специалист\n\n"
+        "Также можно вставить список из «Список сотрудников» целиком."
     )
     await callback.answer()
 
@@ -322,59 +317,61 @@ async def emp_bulk_process(message):
     lines = message.text.strip().split("\n")
     added = []
     errors = []
-    pattern = r'^(.*?)\s*[—-]\s*(.*?)\s*[—-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
+    
     for i, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue
-        m = re.match(pattern, line)
-        if not m:
-            # Старый формат (без должности) — ставим "Специалист"
-            pattern2 = r'^(.*?)\s*[—-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
-            m2 = re.match(pattern2, line)
-            if m2:
-                name = m2.group(1).strip()
-                gt_raw = m2.group(2).strip()
-                ds = m2.group(3).strip()
-                gtype = detect_graphic(gt_raw)
-                if not gtype:
-                    errors.append(f"❌ Строка {i+1}: неизвестный график")
-                    continue
-                try:
-                    pd = datetime.strptime(ds, "%Y-%m-%d")
-                except:
-                    errors.append(f"❌ Строка {i+1}: неверная дата")
-                    continue
-                ok = db.add_employee(name, gtype, pd.strftime("%Y-%m-%d"), "specialist")
-                if ok:
-                    added.append(f"✅ {name} (Специалист)")
-                else:
-                    errors.append(f"❌ {name} уже существует")
+        # Пропускаем заголовки
+        if "список сотрудников" in line.lower() or "можно копировать" in line.lower():
+            continue
+        
+        # Ищем дату в скобках (с ГГГГ-ММ-ДД)
+        date_match = re.search(r'\(с\s+(\d{4}-\d{2}-\d{2})\)', line)
+        if not date_match:
+            errors.append(f"❌ Строка {i+1}: не найдена дата в формате (с ГГГГ-ММ-ДД)")
+            continue
+        date_str = date_match.group(1)
+        
+        # Обрезаем строку до даты
+        before_date = line[:date_match.start()].strip()
+        
+        # Разбиваем по длинному тире с пробелами
+        parts = re.split(r'\s+[—–]\s+', before_date)
+        
+        if len(parts) >= 3:
+            name = parts[0].strip()
+            gt_raw = parts[1].strip()
+            pos_raw = parts[2].strip()
+            pos = detect_position(pos_raw)
+            if not pos:
+                errors.append(f"❌ Строка {i+1}: неизвестная должность «{pos_raw}»")
                 continue
+        elif len(parts) == 2:
+            name = parts[0].strip()
+            gt_raw = parts[1].strip()
+            pos = "specialist"
+        else:
             errors.append(f"❌ Строка {i+1}: неверный формат")
             continue
-        name = m.group(1).strip()
-        gt_raw = m.group(2).strip()
-        pos_raw = m.group(3).strip()
-        ds = m.group(4).strip()
+        
         gtype = detect_graphic(gt_raw)
         if not gtype:
-            errors.append(f"❌ Строка {i+1}: неизвестный график")
+            errors.append(f"❌ Строка {i+1}: неизвестный график «{gt_raw}»")
             continue
-        pos = detect_position(pos_raw)
-        if not pos:
-            errors.append(f"❌ Строка {i+1}: неизвестная должность «{pos_raw}»")
-            continue
+        
         try:
-            pd = datetime.strptime(ds, "%Y-%m-%d")
+            pd = datetime.strptime(date_str, "%Y-%m-%d")
         except:
-            errors.append(f"❌ Строка {i+1}: неверная дата")
+            errors.append(f"❌ Строка {i+1}: неверная дата «{date_str}»")
             continue
+        
         ok = db.add_employee(name, gtype, pd.strftime("%Y-%m-%d"), pos)
         if ok:
             added.append(f"✅ {name} ({position_info(pos)[0]})")
         else:
             errors.append(f"❌ {name} уже существует")
+    
     result = []
     if added:
         result.append("✅ Добавлены:\n" + "\n".join(added))
@@ -854,7 +851,6 @@ async def rec_remove_process(callback):
 # ==================== РАССЫЛКИ (только одна грядущая смена) ====================
 
 async def send_morning_schedule():
-    """Утренняя рассылка: только сегодняшняя дневная смена"""
     today = date.today()
     employees = db.list_employees()
     if not employees:
@@ -879,7 +875,6 @@ async def send_morning_schedule():
             pass
 
 async def send_evening_schedule():
-    """Вечерняя рассылка: только сегодняшняя ночная смена"""
     today = date.today()
     employees = db.list_employees()
     if not employees:
