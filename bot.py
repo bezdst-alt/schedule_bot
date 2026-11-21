@@ -77,13 +77,19 @@ def detect_position(text):
     return None
 
 WEEKDAYS_RU = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"]
+WEEKDAYS_RU_ACC = ["понедельник","вторник","среду","четверг","пятницу","субботу","воскресенье"]
 MONTHS_RU = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
 
 def fmt_date(d):
     return f"{d.day:02d} {MONTHS_RU[d.month]}"
 
 def fmt_date_full(d):
+    """Именительный падеж: 'Суббота, 05 октября'"""
     return f"{WEEKDAYS_RU[d.weekday()]}, {fmt_date(d)}"
+
+def fmt_date_acc(d):
+    """Винительный падеж: 'субботу, 05 октября' — для 'на ...'"""
+    return f"{WEEKDAYS_RU_ACC[d.weekday()]}, {fmt_date(d)}"
 
 # ==================== ПОСТОЯННОЕ МЕНЮ ====================
 
@@ -636,7 +642,7 @@ async def sched_custom_process(message):
             days = []
             d = start
             while d <= end:
-                days.append(fmt_date_full(d) + "\n" + format_schedule(d, employees))
+                days.append("📆 " + fmt_date_full(d) + "\n" + format_schedule(d, employees))
                 d += timedelta(days=1)
             for i in range(0, len(days), 3):
                 await message.answer("\n\n".join(days[i:i+3]))
@@ -658,7 +664,8 @@ async def sched_custom_process(message):
         if uid in user_data: del user_data[uid]
 
 async def show_schedule(msg, for_date, employees):
-    text = f"📅 Расписание на {fmt_date_full(for_date)}\n\n{format_schedule(for_date, employees)}"
+    """Заголовок в винительном падеже: 'Расписание на пятницу, 05 октября'"""
+    text = f"📅 Расписание на {fmt_date_acc(for_date)}\n\n{format_schedule(for_date, employees)}"
     await msg.answer(text, reply_markup=back_button())
 
 def format_workers_list(names, date_str, shift, employees, overrides):
