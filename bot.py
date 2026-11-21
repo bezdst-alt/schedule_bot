@@ -4,7 +4,10 @@ import re
 from datetime import datetime, date, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
@@ -47,11 +50,30 @@ GRAPHIC_NAMES = {
     "2-1-2-3": "2-1-2-3",
 }
 
-GRAPHIC_EMOJIS = {
-    "2x2_day": "☀️",
-    "24x3": "🌙",
-    "2-1-2-3": "🔄",
+# ==================== ДОЛЖНОСТИ ====================
+
+POSITIONS = {
+    "chief_mechanic": {"name": "Главный механик", "emoji": "⚙️", "order": 1},
+    "kipia_engineer": {"name": "Инженер КИПиА", "emoji": "💻", "order": 2},
+    "electrician": {"name": "Электромеханик", "emoji": "⚡", "order": 3},
+    "specialist": {"name": "Специалист", "emoji": "🔧", "order": 4},
 }
+
+def position_info(pos_key):
+    p = POSITIONS.get(pos_key, POSITIONS["specialist"])
+    return p["name"], p["emoji"], p["order"]
+
+def detect_position(text):
+    t = text.lower().strip()
+    if "главн" in t and "механ" in t:
+        return "chief_mechanic"
+    if "кипиа" in t or "кип" in t:
+        return "kipia_engineer"
+    if "электро" in t:
+        return "electrician"
+    if "специал" in t:
+        return "specialist"
+    return None
 
 WEEKDAYS_RU = ["Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье"]
 MONTHS_RU = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
@@ -61,6 +83,16 @@ def fmt_date(d):
 
 def fmt_date_full(d):
     return f"{WEEKDAYS_RU[d.weekday()]}, {fmt_date(d)}"
+
+# ==================== ПОСТОЯННОЕ МЕНЮ ====================
+
+def main_keyboard():
+    kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📋 Меню")]],
+        resize_keyboard=True,
+        persistent=True
+    )
+    return kb
 
 def main_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -79,6 +111,13 @@ def back_button():
 
 @dp.message(Command("start"))
 async def cmd_start(message):
+    if not await admin_only(message):
+        return
+    await message.answer("Главное меню:", reply_markup=main_menu())
+    await message.answer("Кнопка «📋 Меню» всегда внизу ⬇️", reply_markup=main_keyboard())
+
+@dp.message(lambda m: m.text == "📋 Меню")
+async def reply_menu(message):
     if not await admin_only(message):
         return
     await message.answer("Главное меню:", reply_markup=main_menu())
@@ -108,8 +147,6 @@ async def cmd_week(message: types.Message):
     
     text = format_week_schedule(date.today(), employees)
     await message.answer(text)
-
-# ==================== КНОПКИ ДЛЯ ПОЛУЧАТЕЛЕЙ ====================
 
 def recipient_kb():
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -143,23 +180,18 @@ async def recipient_week(callback):
 @dp.callback_query(lambda c: c.data == "recipient_unsubscribe")
 async def recipient_unsubscribe(callback):
     user_id = callback.from_user.id
-    
     user_name = f"User {user_id}"
     try:
         user = await bot.get_chat(user_id)
         user_name = user.full_name or user_name
     except:
         pass
-    
     db.remove_recipient(user_id)
-    
     goodbye_text = (
         "🚫 **Вы отписались от ежедневной рассылки расписания.**\n\n"
         "Если захотите снова получать расписание — свяжитесь с администратором. 😊"
     )
-    
     await callback.message.edit_text(goodbye_text)
-    
     try:
         await bot.send_message(
             config.YOUR_TELEGRAM_ID,
@@ -167,7 +199,6 @@ async def recipient_unsubscribe(callback):
         )
     except:
         pass
-    
     await callback.answer()
 
 # ==================== СОТРУДНИКИ ====================
@@ -177,6 +208,7 @@ def employees_menu():
         [InlineKeyboardButton(text="➕ Добавить одного", callback_data="emp_add")],
         [InlineKeyboardButton(text="👥 Добавить несколько", callback_data="emp_bulk")],
         [InlineKeyboardButton(text="📋 Список сотрудников", callback_data="emp_list")],
+        [InlineKeyboardButton(text="🎖 Присвоить должность", callback_data="emp_position")],
         [InlineKeyboardButton(text="🗑 Удалить", callback_data="emp_remove")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
@@ -189,22 +221,24 @@ async def menu_employees(callback):
 
 @dp.callback_query(lambda c: c.data == "emp_list")
 async def emp_list(callback):
-    """Показывает список сотрудников в формате для копирования (без эмодзи)"""
+    """Список в формате для копирования (с должностью)"""
     employees = db.list_employees()
     if not employees:
         await callback.message.edit_text("📭 Нет сотрудников.", reply_markup=back_button())
         await callback.answer()
         return
-    # Формат для копирования: Имя - график (с ГГГГ-ММ-ДД)
     lines = ["📋 Список сотрудников (можно копировать):\n"]
-    for e in employees:
+    sorted_emps = sorted(employees, key=lambda e: (position_info(e[4])[2], e[1]))
+    for e in sorted_emps:
         name = e[1]
         gtype = GRAPHIC_NAMES.get(e[2], e[2])
         start = e[3]
-        lines.append(f"{name} — {gtype} (с {start})")
+        pos_name = position_info(e[4])[0]
+        lines.append(f"{name} — {gtype} — {pos_name} (с {start})")
     await callback.message.edit_text("\n".join(lines), reply_markup=back_button())
     await callback.answer()
 
+# --- Добавить одного ---
 @dp.callback_query(lambda c: c.data == "emp_add")
 async def emp_add(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -213,14 +247,14 @@ async def emp_add(callback):
         [InlineKeyboardButton(text="🔄 2-1-2-3", callback_data="g_2-1-2-3")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_employees")],
     ])
-    await callback.message.edit_text("👤 Выберите график:", reply_markup=kb)
+    await callback.message.edit_text("👤 Шаг 1: Выберите график:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("g_"))
 async def emp_add_graphic(callback):
     gtype = callback.data.replace("g_","")
     user_data[callback.from_user.id] = {'action':'add_emp','graphic_type':gtype,'step':'name'}
-    await callback.message.edit_text("✏️ Введите имя сотрудника:")
+    await callback.message.edit_text("✏️ Шаг 2: Введите имя сотрудника:")
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='add_emp' and user_data[msg.from_user.id].get('step')=='name')
@@ -228,7 +262,7 @@ async def emp_add_name(message):
     uid = message.from_user.id
     user_data[uid]['name'] = message.text.strip()
     user_data[uid]['step'] = 'date'
-    await message.answer("📅 Введите дату начала (ДД.ММ.ГГГГ):")
+    await message.answer("📅 Шаг 3: Введите дату начала (ДД.ММ.ГГГГ):")
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='add_emp' and user_data[msg.from_user.id].get('step')=='date')
 async def emp_add_date(message):
@@ -241,20 +275,45 @@ async def emp_add_date(message):
         except:
             continue
     if not dt:
-        await message.answer("❌ Неверный формат.", reply_markup=back_button())
+        await message.answer("❌ Неверный формат.")
         return
-    data = user_data[uid]
-    ok = db.add_employee(data['name'], data['graphic_type'], dt.strftime("%Y-%m-%d"))
-    if ok:
-        await message.answer(f"✅ {data['name']} добавлен!", reply_markup=employees_menu())
-    else:
-        await message.answer(f"❌ {data['name']} уже существует.", reply_markup=employees_menu())
-    del user_data[uid]
+    user_data[uid]['start_date'] = dt.strftime("%Y-%m-%d")
+    user_data[uid]['step'] = 'position'
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Главный механик", callback_data="pos_chief_mechanic")],
+        [InlineKeyboardButton(text="💻 Инженер КИПиА", callback_data="pos_kipia_engineer")],
+        [InlineKeyboardButton(text="⚡ Электромеханик", callback_data="pos_electrician")],
+        [InlineKeyboardButton(text="🔧 Специалист", callback_data="pos_specialist")],
+    ])
+    await message.answer("🎖 Шаг 4: Выберите должность:", reply_markup=kb)
 
+@dp.callback_query(lambda c: c.data.startswith("pos_") and user_data.get(c.from_user.id,{}).get('action')=='add_emp')
+async def emp_add_position(callback):
+    pos = callback.data.replace("pos_","")
+    uid = callback.from_user.id
+    data = user_data[uid]
+    ok = db.add_employee(data['name'], data['graphic_type'], data['start_date'], pos)
+    if ok:
+        pos_name = position_info(pos)[0]
+        await callback.message.edit_text(f"✅ {data['name']} добавлен!\nДолжность: {pos_name}", reply_markup=employees_menu())
+    else:
+        await callback.message.edit_text(f"❌ {data['name']} уже существует.", reply_markup=employees_menu())
+    del user_data[uid]
+    await callback.answer()
+
+# --- Массовое добавление ---
 @dp.callback_query(lambda c: c.data == "emp_bulk")
 async def emp_bulk(callback):
     user_data[callback.from_user.id] = {'action':'bulk_add'}
-    await callback.message.edit_text("📋 Массовое добавление\n\nФормат:\nИмя - график (с ГГГГ-ММ-ДД)")
+    await callback.message.edit_text(
+        "📋 **Массовое добавление**\n\n"
+        "Формат:\n"
+        "Имя — график — должность (с ГГГГ-ММ-ДД)\n\n"
+        "Пример:\n"
+        "Иван Иванов — 2-1-2-3 — Главный механик (с 2026-08-01)\n"
+        "Пётр Петров — 2x2 день — Специалист (с 2026-08-05)\n\n"
+        "Должности: Главный механик, Инженер КИПиА, Электромеханик, Специалист"
+    )
     await callback.answer()
 
 @dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='bulk_add')
@@ -263,30 +322,57 @@ async def emp_bulk_process(message):
     lines = message.text.strip().split("\n")
     added = []
     errors = []
-    pattern = r'^(.*?)\s*[—-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
+    pattern = r'^(.*?)\s*[—-]\s*(.*?)\s*[—-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
     for i, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue
         m = re.match(pattern, line)
         if not m:
+            # Старый формат (без должности) — ставим "Специалист"
+            pattern2 = r'^(.*?)\s*[—-]\s*(.*?)\s*\(с\s*(\d{4}-\d{2}-\d{2})\)\s*$'
+            m2 = re.match(pattern2, line)
+            if m2:
+                name = m2.group(1).strip()
+                gt_raw = m2.group(2).strip()
+                ds = m2.group(3).strip()
+                gtype = detect_graphic(gt_raw)
+                if not gtype:
+                    errors.append(f"❌ Строка {i+1}: неизвестный график")
+                    continue
+                try:
+                    pd = datetime.strptime(ds, "%Y-%m-%d")
+                except:
+                    errors.append(f"❌ Строка {i+1}: неверная дата")
+                    continue
+                ok = db.add_employee(name, gtype, pd.strftime("%Y-%m-%d"), "specialist")
+                if ok:
+                    added.append(f"✅ {name} (Специалист)")
+                else:
+                    errors.append(f"❌ {name} уже существует")
+                continue
             errors.append(f"❌ Строка {i+1}: неверный формат")
             continue
         name = m.group(1).strip()
         gt_raw = m.group(2).strip()
-        ds = m.group(3).strip()
+        pos_raw = m.group(3).strip()
+        ds = m.group(4).strip()
         gtype = detect_graphic(gt_raw)
         if not gtype:
             errors.append(f"❌ Строка {i+1}: неизвестный график")
+            continue
+        pos = detect_position(pos_raw)
+        if not pos:
+            errors.append(f"❌ Строка {i+1}: неизвестная должность «{pos_raw}»")
             continue
         try:
             pd = datetime.strptime(ds, "%Y-%m-%d")
         except:
             errors.append(f"❌ Строка {i+1}: неверная дата")
             continue
-        ok = db.add_employee(name, gtype, pd.strftime("%Y-%m-%d"))
+        ok = db.add_employee(name, gtype, pd.strftime("%Y-%m-%d"), pos)
         if ok:
-            added.append(f"✅ {name}")
+            added.append(f"✅ {name} ({position_info(pos)[0]})")
         else:
             errors.append(f"❌ {name} уже существует")
     result = []
@@ -299,6 +385,54 @@ async def emp_bulk_process(message):
     await message.answer("\n\n".join(result), reply_markup=employees_menu())
     del user_data[uid]
 
+# --- Присвоить должность ---
+@dp.callback_query(lambda c: c.data == "emp_position")
+async def emp_position_start(callback):
+    employees = db.list_employees()
+    if not employees:
+        await callback.message.edit_text("📭 Нет сотрудников.", reply_markup=back_button())
+        await callback.answer()
+        return
+    sorted_emps = sorted(employees, key=lambda e: (position_info(e[4])[2], e[1]))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{position_info(e[4])[1]} {e[1]}", callback_data=f"setpos_{e[0]}")] for e in sorted_emps
+    ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="menu_employees")]])
+    await callback.message.edit_text("🎖 Выберите сотрудника:", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("setpos_"))
+async def emp_position_choose(callback):
+    eid = int(callback.data.replace("setpos_",""))
+    user_data[callback.from_user.id] = {'action':'set_position','eid':eid}
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Главный механик", callback_data="newpos_chief_mechanic")],
+        [InlineKeyboardButton(text="💻 Инженер КИПиА", callback_data="newpos_kipia_engineer")],
+        [InlineKeyboardButton(text="⚡ Электромеханик", callback_data="newpos_electrician")],
+        [InlineKeyboardButton(text="🔧 Специалист", callback_data="newpos_specialist")],
+    ])
+    await callback.message.edit_text("🎖 Выберите новую должность:", reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data.startswith("newpos_"))
+async def emp_position_apply(callback):
+    pos = callback.data.replace("newpos_","")
+    uid = callback.from_user.id
+    data = user_data.get(uid, {})
+    if 'eid' not in data:
+        await callback.answer()
+        return
+    emp = db.get_employee(data['eid'])
+    if emp:
+        db.update_position(emp[1], pos)
+        pos_name = position_info(pos)[0]
+        await callback.message.edit_text(f"✅ Должность {emp[1]} → {pos_name}", reply_markup=employees_menu())
+    else:
+        await callback.message.edit_text("❌ Сотрудник не найден.", reply_markup=employees_menu())
+    if uid in user_data:
+        del user_data[uid]
+    await callback.answer()
+
+# --- Удалить ---
 @dp.callback_query(lambda c: c.data == "emp_remove")
 async def emp_remove(callback):
     employees = db.list_employees()
@@ -363,7 +497,7 @@ async def ov_add_date(message):
     try:
         parsed = datetime.strptime(message.text.strip(), "%d.%m.%Y")
     except:
-        await message.answer("❌ Неверный формат.", reply_markup=back_button())
+        await message.answer("❌ Неверный формат.")
         return
     user_data[uid]['date'] = parsed.strftime("%Y-%m-%d")
     user_data[uid]['step'] = 'shift'
@@ -413,7 +547,7 @@ async def ov_remove_date(message):
     try:
         parsed = datetime.strptime(message.text.strip(), "%d.%m.%Y")
     except:
-        await message.answer("❌ Неверный формат.", reply_markup=back_button())
+        await message.answer("❌ Неверный формат.")
         return
     ds = parsed.strftime("%Y-%m-%d")
     overrides = db.list_overrides_for_date(ds)
@@ -519,6 +653,19 @@ async def show_schedule(msg, for_date, employees):
     text = f"📅 Расписание на {fmt_date_full(for_date)}\n\n{format_schedule(for_date, employees)}"
     await msg.answer(text, reply_markup=back_button())
 
+def format_workers_list(names, date_str, shift, employees, overrides):
+    """Список работников с эмодзи должности и пометкой РВ, отсортированный по должности"""
+    result = []
+    for w in names:
+        emp = next((e for e in employees if e[1]==w), None)
+        if not emp:
+            continue
+        pos_name, pos_emoji, pos_order = position_info(emp[4])
+        rv = " ⭐РВ" if (emp[0], date_str, shift) in overrides else ""
+        result.append((pos_order, w, f"  {pos_emoji} {w}{rv}"))
+    result.sort()
+    return [r[2] for r in result]
+
 def format_schedule(for_date, employees):
     date_str = for_date.strftime("%Y-%m-%d")
     ov = db.list_overrides_for_date(date_str)
@@ -532,18 +679,13 @@ def format_schedule(for_date, employees):
     lines = []
     lines.append("☀️ День (08:00-20:00):")
     if day_workers:
-        for w in sorted(day_workers):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],date_str,"day") in overrides else ""
-            lines.append(f"  👤 {w}{s}")
+        lines.extend(format_workers_list(day_workers, date_str, "day", employees, overrides))
     else:
         lines.append("  ❌ Нет")
+    lines.append("")
     lines.append("🌙 Ночь (20:00-08:00):")
     if night_workers:
-        for w in sorted(night_workers):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],date_str,"night") in overrides else ""
-            lines.append(f"  👤 {w}{s}")
+        lines.extend(format_workers_list(night_workers, date_str, "night", employees, overrides))
     else:
         lines.append("  ❌ Нет")
     return "\n".join(lines)
@@ -564,23 +706,15 @@ def format_week_schedule(start_date, employees):
                 overrides.add((emp[0], date_str, o[3]))
         day_workers = list(set(get_day_schedule(d, employees, overrides)))
         night_workers = list(set(get_night_schedule(d, employees, overrides)))
-        lines.append("━" * 30)
-        lines.append(fmt_date_full(d))
-        lines.append("")
+        lines.append("▪️ " + fmt_date_full(d))
         lines.append("☀️ День:")
         if day_workers:
-            for w in sorted(day_workers):
-                emp = next((e for e in employees if e[1]==w), None)
-                s = " ⭐РВ" if emp and (emp[0],date_str,"day") in overrides else ""
-                lines.append(f"  👤 {w}{s}")
+            lines.extend(format_workers_list(day_workers, date_str, "day", employees, overrides))
         else:
             lines.append("  ❌ Нет")
         lines.append("🌙 Ночь:")
         if night_workers:
-            for w in sorted(night_workers):
-                emp = next((e for e in employees if e[1]==w), None)
-                s = " ⭐РВ" if emp and (emp[0],date_str,"night") in overrides else ""
-                lines.append(f"  👤 {w}{s}")
+            lines.extend(format_workers_list(night_workers, date_str, "night", employees, overrides))
         else:
             lines.append("  ❌ Нет")
         lines.append("")
@@ -619,7 +753,6 @@ async def rec_add_process(message):
     uid = message.from_user.id
     uid_to_add = None
     name = ""
-    
     if message.forward_from:
         uid_to_add = message.forward_from.id
         name = message.forward_from.full_name or f"User {uid_to_add}"
@@ -635,8 +768,7 @@ async def rec_add_process(message):
         except:
             await message.answer(
                 f"❌ Не удалось найти пользователя @{username}.\n\n"
-                f"Попросите его сначала написать боту любое сообщение, "
-                f"а потом попробуйте снова.",
+                f"Попросите его сначала написать боту любое сообщение, а потом попробуйте снова.",
                 reply_markup=recipients_menu()
             )
             del user_data[uid]
@@ -645,11 +777,9 @@ async def rec_add_process(message):
         await message.answer("❌ Не удалось определить получателя.", reply_markup=recipients_menu())
         del user_data[uid]
         return
-    
     ok = db.add_recipient(uid_to_add, name)
     if ok:
         await message.answer(f"✅ Получатель добавлен! {name} (ID: {uid_to_add})", reply_markup=recipients_menu())
-        
         try:
             await bot.send_message(
                 config.YOUR_TELEGRAM_ID,
@@ -657,7 +787,6 @@ async def rec_add_process(message):
             )
         except:
             pass
-        
         try:
             welcome_text = (
                 "👋 **Привет!**\n\n"
@@ -703,9 +832,7 @@ async def rec_remove_process(callback):
     recipients = db.list_recipients()
     recip = next((r for r in recipients if r[0] == uid), None)
     name = recip[1] if recip else "Пользователь"
-    
     db.remove_recipient(uid)
-    
     try:
         goodbye_text = (
             "🚫 **Вы отключены от получения ежедневной рассылки расписания.**\n\n"
@@ -714,7 +841,6 @@ async def rec_remove_process(callback):
         await bot.send_message(uid, goodbye_text)
     except:
         pass
-    
     try:
         await bot.send_message(
             config.YOUR_TELEGRAM_ID,
@@ -722,13 +848,13 @@ async def rec_remove_process(callback):
         )
     except:
         pass
-    
     await callback.message.edit_text(f"🗑 {name} удален из получателей.", reply_markup=recipients_menu())
     await callback.answer()
 
-# ==================== РАССЫЛКИ ====================
+# ==================== РАССЫЛКИ (только одна грядущая смена) ====================
 
 async def send_morning_schedule():
+    """Утренняя рассылка: только сегодняшняя дневная смена"""
     today = date.today()
     employees = db.list_employees()
     if not employees:
@@ -741,24 +867,11 @@ async def send_morning_schedule():
         if emp:
             overrides.add((emp[0], ds, o[3]))
     day_w = list(set(get_day_schedule(today, employees, overrides)))
-    night_w = list(set(get_night_schedule(today, employees, overrides)))
-    text = f"Доброе утро! Расписание на {fmt_date_full(today)}\n\n☀️ День (08-20):\n"
+    text = f"🌅 Доброе утро!\n📅 {fmt_date_full(today)}\n\n☀️ Дневная смена (08:00-20:00):\n"
     if day_w:
-        for w in sorted(day_w):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],ds,"day") in overrides else ""
-            text += f"  👤 {w}{s}\n"
+        text += "\n".join(format_workers_list(day_w, ds, "day", employees, overrides)) + "\n"
     else:
         text += "  ❌ Нет\n"
-    text += "\n🌙 Ночь (20-08):\n"
-    if night_w:
-        for w in sorted(night_w):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],ds,"night") in overrides else ""
-            text += f"  👤 {w}{s}\n"
-    else:
-        text += "  ❌ Нет\n"
-    
     for r in db.list_recipients():
         try:
             await bot.send_message(r[0], text, reply_markup=recipient_kb())
@@ -766,8 +879,8 @@ async def send_morning_schedule():
             pass
 
 async def send_evening_schedule():
+    """Вечерняя рассылка: только сегодняшняя ночная смена"""
     today = date.today()
-    tomorrow = today + timedelta(days=1)
     employees = db.list_employees()
     if not employees:
         return
@@ -779,31 +892,11 @@ async def send_evening_schedule():
         if emp:
             overrides.add((emp[0], ds, o[3]))
     night_w = list(set(get_night_schedule(today, employees, overrides)))
-    tms = tomorrow.strftime("%Y-%m-%d")
-    ov2 = db.list_overrides_for_date(tms)
-    overrides2 = set()
-    for o in ov2:
-        emp = next((e for e in employees if e[1]==o[1]), None)
-        if emp:
-            overrides2.add((emp[0], tms, o[3]))
-    day_w = list(set(get_day_schedule(tomorrow, employees, overrides2)))
-    text = f"Добрый вечер!\n\n🌙 Сегодня ночью (20-08):\n"
+    text = f"🌆 Добрый вечер!\n📅 {fmt_date_full(today)}\n\n🌙 Ночная смена (20:00-08:00):\n"
     if night_w:
-        for w in sorted(night_w):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],ds,"night") in overrides else ""
-            text += f"  👤 {w}{s}\n"
+        text += "\n".join(format_workers_list(night_w, ds, "night", employees, overrides)) + "\n"
     else:
         text += "  ❌ Нет\n"
-    text += f"\n☀️ Завтра днем ({fmt_date_full(tomorrow)}):\n"
-    if day_w:
-        for w in sorted(day_w):
-            emp = next((e for e in employees if e[1]==w), None)
-            s = " ⭐РВ" if emp and (emp[0],tms,"day") in overrides else ""
-            text += f"  👤 {w}{s}\n"
-    else:
-        text += "  ❌ Нет\n"
-    
     for r in db.list_recipients():
         try:
             await bot.send_message(r[0], text, reply_markup=recipient_kb())
