@@ -880,23 +880,41 @@ async def rec_remove_process(callback):
 # ==================== РАССЫЛКИ ====================
 
 async def send_morning_schedule():
+    """07:00 — дневная смена сегодня + ночная смена сегодня"""
     today = date.today()
     employees = db.list_employees()
     if not employees:
         return
-    ds = today.strftime("%Y-%m-%d")
-    ov = db.list_overrides_for_date(ds)
-    overrides = set()
-    for o in ov:
-        emp = next((e for e in employees if e[1]==o[1]), None)
-        if emp:
-            overrides.add((emp[0], ds, o[3]))
-    day_w = list(set(get_day_schedule(today, employees, overrides)))
-    text = f"🌅 Доброе утро!\n📅 {fmt_date_full(today)}\n\n☀️ Дневная смена (08:00-20:00):\n"
+
+    def get_overrides(for_date):
+        ds = for_date.strftime("%Y-%m-%d")
+        ov = db.list_overrides_for_date(ds)
+        s = set()
+        for o in ov:
+            emp = next((e for e in employees if e[1]==o[1]), None)
+            if emp:
+                s.add((emp[0], ds, o[3]))
+        return s, ds
+
+    ds_today = today.strftime("%Y-%m-%d")
+    ov_today, _ = get_overrides(today)
+    day_w = list(set(get_day_schedule(today, employees, ov_today)))
+    night_w = list(set(get_night_schedule(today, employees, ov_today)))
+
+    text = f"🌅 Доброе утро!\n📅 {fmt_date_full(today)}\n\n"
+
+    text += "☀️ Дневная смена (08:00-20:00):\n"
     if day_w:
-        text += "\n".join(format_workers_list(day_w, ds, "day", employees, overrides)) + "\n"
+        text += "\n".join(format_workers_list(day_w, ds_today, "day", employees, ov_today)) + "\n"
     else:
         text += "  ❌ Нет\n"
+
+    text += "\n🌙 Ночная смена (20:00-08:00):\n"
+    if night_w:
+        text += "\n".join(format_workers_list(night_w, ds_today, "night", employees, ov_today)) + "\n"
+    else:
+        text += "  ❌ Нет\n"
+
     for r in db.list_recipients():
         try:
             await bot.send_message(r[0], text, reply_markup=recipient_kb())
@@ -904,23 +922,43 @@ async def send_morning_schedule():
             pass
 
 async def send_evening_schedule():
+    """19:00 — ночная смена сегодня + дневная смена завтра"""
     today = date.today()
+    tomorrow = today + timedelta(days=1)
     employees = db.list_employees()
     if not employees:
         return
-    ds = today.strftime("%Y-%m-%d")
-    ov = db.list_overrides_for_date(ds)
-    overrides = set()
-    for o in ov:
-        emp = next((e for e in employees if e[1]==o[1]), None)
-        if emp:
-            overrides.add((emp[0], ds, o[3]))
-    night_w = list(set(get_night_schedule(today, employees, overrides)))
-    text = f"🌆 Добрый вечер!\n📅 {fmt_date_full(today)}\n\n🌙 Ночная смена (20:00-08:00):\n"
+
+    def get_overrides(for_date):
+        ds = for_date.strftime("%Y-%m-%d")
+        ov = db.list_overrides_for_date(ds)
+        s = set()
+        for o in ov:
+            emp = next((e for e in employees if e[1]==o[1]), None)
+            if emp:
+                s.add((emp[0], ds, o[3]))
+        return s, ds
+
+    ov_today, ds_today = get_overrides(today)
+    ov_tomorrow, ds_tomorrow = get_overrides(tomorrow)
+
+    night_w = list(set(get_night_schedule(today, employees, ov_today)))
+    day_w = list(set(get_day_schedule(tomorrow, employees, ov_tomorrow)))
+
+    text = f"🌆 Добрый вечер!\n📅 {fmt_date_full(today)}\n\n"
+
+    text += "🌙 Ночная смена сегодня (20:00-08:00):\n"
     if night_w:
-        text += "\n".join(format_workers_list(night_w, ds, "night", employees, overrides)) + "\n"
+        text += "\n".join(format_workers_list(night_w, ds_today, "night", employees, ov_today)) + "\n"
     else:
         text += "  ❌ Нет\n"
+
+    text += f"\n☀️ Дневная смена завтра ({fmt_date_full(tomorrow)}, 08:00-20:00):\n"
+    if day_w:
+        text += "\n".join(format_workers_list(day_w, ds_tomorrow, "day", employees, ov_tomorrow)) + "\n"
+    else:
+        text += "  ❌ Нет\n"
+
     for r in db.list_recipients():
         try:
             await bot.send_message(r[0], text, reply_markup=recipient_kb())
