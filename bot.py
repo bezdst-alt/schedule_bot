@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import os
 import traceback
 from datetime import datetime, date, timedelta
 from aiogram import Bot, Dispatcher, types
@@ -80,18 +81,21 @@ WEEKDAYS_RU = ["Понедельник","Вторник","Среда","Четв�
 WEEKDAYS_RU_ACC = ["понедельник","вторник","среду","четверг","пятницу","субботу","воскресенье"]
 MONTHS_RU = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
 
+MONTHS_SHORT = {
+    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5, "июн": 6,
+    "июл": 7, "авг": 8, "сен": 9, "сент": 9, "окт": 10, "ноя": 11, "дек": 12
+}
+
 def fmt_date(d):
     return f"{d.day:02d} {MONTHS_RU[d.month]}"
 
 def fmt_date_full(d):
-    """Именительный падеж: 'Суббота, 05 октября'"""
     return f"{WEEKDAYS_RU[d.weekday()]}, {fmt_date(d)}"
 
 def fmt_date_acc(d):
-    """Винительный падеж: 'субботу, 05 октября' — для 'на ...'"""
     return f"{WEEKDAYS_RU_ACC[d.weekday()]}, {fmt_date(d)}"
 
-# ==================== ПОСТОЯННОЕ МЕНЮ ====================
+# ==================== МЕНЮ ====================
 
 def main_keyboard():
     kb = ReplyKeyboardMarkup(
@@ -134,7 +138,7 @@ async def back_to_main(callback):
     await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
     await callback.answer()
 
-# ==================== КОМАНДА ДЛЯ ПОЛУЧАТЕЛЕЙ ====================
+# ==================== ПОЛУЧАТЕЛИ / WEEK ====================
 
 @dp.message(Command("week"))
 async def cmd_week(message: types.Message):
@@ -239,7 +243,6 @@ async def emp_list(callback):
     await callback.message.edit_text("\n".join(lines), reply_markup=back_button())
     await callback.answer()
 
-# --- Добавить одного ---
 @dp.callback_query(lambda c: c.data == "emp_add")
 async def emp_add(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -302,7 +305,6 @@ async def emp_add_position(callback):
     del user_data[uid]
     await callback.answer()
 
-# --- Массовое добавление ---
 @dp.callback_query(lambda c: c.data == "emp_bulk")
 async def emp_bulk(callback):
     user_data[callback.from_user.id] = {'action':'bulk_add'}
@@ -382,7 +384,6 @@ async def emp_bulk_process(message):
     await message.answer("\n\n".join(result), reply_markup=employees_menu())
     del user_data[uid]
 
-# --- Присвоить должность ---
 @dp.callback_query(lambda c: c.data == "emp_position")
 async def emp_position_start(callback):
     employees = db.list_employees()
@@ -429,7 +430,6 @@ async def emp_position_apply(callback):
         del user_data[uid]
     await callback.answer()
 
-# --- Удалить ---
 @dp.callback_query(lambda c: c.data == "emp_remove")
 async def emp_remove(callback):
     employees = db.list_employees()
@@ -459,6 +459,7 @@ def overrides_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Добавить РВ", callback_data="ov_add")],
         [InlineKeyboardButton(text="❌ Удалить РВ", callback_data="ov_remove")],
+        [InlineKeyboardButton(text="📥 Загрузить РВ из Excel", callback_data="ov_upload")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")],
     ])
     return kb
@@ -572,6 +573,262 @@ async def ov_remove_del(callback):
     if callback.from_user.id in user_data:
         del user_data[callback.from_user.id]
 
+# ==================== ЗАГРУЗКА РВ ИЗ EXCEL ====================
+
+@dp.callback_query(lambda c: c.data == "ov_upload")
+async def ov_upload_start(callback):
+    user_data[callback.from_user.id] = {'action':'upload_rv'}
+    await callback.message.edit_text(
+        "📥 Загрузите Excel-файл (.xlsx) с таблицей РВ.\n\n"
+        "Формат таблицы:\n"
+        "• Первая строка — заголовки с датами (например: 01.ноя, 02.ноя, ...)\n"
+        "• Первая колонка — фамилия и инициал (например: Антоновский М.)\n"
+        "• Вторая колонка — 'день' или 'ночь'\n"
+        "• В ячейках дат — символ 'х' или 'x' означает РВ\n\n"
+        "Даты в прошлом будут проигнорированы.\n"
+        "Сотрудники, которых нет в базе, будут пропущены с отчётом."
+    )
+    await callback.answer()
+
+@dp.message(lambda msg: user_data.get(msg.from_user.id,{}).get('action')=='upload_rv' and msg.document)
+async def ov_upload_process(message: types.Message):
+    uid = message.from_user.id
+    doc = message.document
+    
+    if not doc.file_name.lower().endswith('.xlsx'):
+        await message.answer("❌ Нужен файл с расширением .xlsx")
+        return
+    
+    file_path = f"/tmp/{uid}_rv.xlsx"
+    try:
+        await bot.download(doc, destination=file_path)
+    except Exception as e:
+        await message.answer(f"❌ Не удалось скачать файл: {e}")
+        return
+    
+    result_text = parse_excel_rv(file_path)
+    
+    try:
+        os.remove(file_path)
+    except:
+        pass
+    
+    if uid in user_data:
+        del user_data[uid]
+    
+    await message.answer(result_text, reply_markup=overrides_menu())
+
+def parse_excel_rv(file_path):
+    """Парсит Excel с РВ и добавляет в БД"""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return "❌ Библиотека openpyxl не установлена. Добавьте её в requirements.txt и перезапустите бота."
+    
+    try:
+        wb = load_workbook(file_path, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return f"❌ Не удалось открыть файл: {e}"
+    
+    # Читаем все строки в список списков
+    all_rows = []
+    for row in ws.iter_rows(values_only=True):
+        all_rows.append(list(row))
+    
+    if not all_rows:
+        return "❌ Файл пустой"
+    
+    # Ищем строку с датами — где в ячейках есть даты типа "01.ноя" или datetime
+    date_row_idx = None
+    date_columns = {}  # col_idx -> date object
+    
+    for row_idx, row in enumerate(all_rows[:5]):  # ищем в первых 5 строках
+        found_dates = {}
+        for col_idx, cell in enumerate(row):
+            if cell is None:
+                continue
+            d = parse_excel_date_cell(cell)
+            if d:
+                found_dates[col_idx] = d
+        if len(found_dates) >= 3:  # хотя бы 3 даты — это строка с датами
+            date_row_idx = row_idx
+            date_columns = found_dates
+            break
+    
+    if not date_columns:
+        return "❌ Не найдена строка с датами (формат '01.ноя')"
+    
+    # Получаем список сотрудников из БД
+    employees = db.list_employees()
+    
+    # Парсим строки после date_row_idx
+    now = date.today()
+    added_count = 0
+    skipped_past = 0
+    not_found_names = set()
+    already_exists = 0
+    total_processed = 0
+    
+    current_employee = None
+    current_shift = None
+    
+    for row_idx in range(date_row_idx + 1, len(all_rows)):
+        row = all_rows[row_idx]
+        if not row or all(c is None for c in row):
+            continue
+        
+        # Колонка 0 — ФИО, колонка 1 — тип смены ("день"/"ночь")
+        name_cell = row[0] if len(row) > 0 else None
+        shift_cell = row[1] if len(row) > 1 else None
+        
+        if name_cell and str(name_cell).strip():
+            current_employee = str(name_cell).strip()
+        
+        if shift_cell:
+            shift_str = str(shift_cell).strip().lower()
+            if shift_str.startswith("д"):
+                current_shift = "day"
+            elif shift_str.startswith("н"):
+                current_shift = "night"
+            else:
+                current_shift = None
+        else:
+            current_shift = None
+        
+        if not current_employee or not current_shift:
+            continue
+        
+        # Ищем сотрудника в БД
+        emp_match = match_employee(current_employee, employees)
+        if not emp_match:
+            not_found_names.add(current_employee)
+            continue
+        
+        emp_id = emp_match[0]
+        
+        # Проходим по колонкам с датами
+        for col_idx, rv_date in date_columns.items():
+            if col_idx >= len(row):
+                continue
+            cell_val = row[col_idx]
+            if cell_val is None:
+                continue
+            cell_str = str(cell_val).strip().lower()
+            if cell_str in ('х', 'x', 'X', 'Х'):
+                total_processed += 1
+                if rv_date < now:
+                    skipped_past += 1
+                    continue
+                rv_date_str = rv_date.strftime("%Y-%m-%d")
+                ok = db.add_override(emp_id, rv_date_str, current_shift)
+                if ok:
+                    added_count += 1
+                else:
+                    already_exists += 1
+    
+    # Формируем отчёт
+    result = []
+    result.append("📥 Результат загрузки РВ:")
+    result.append("")
+    result.append(f"✅ Добавлено РВ: {added_count}")
+    if already_exists:
+        result.append(f"ℹ️ Уже были в базе: {already_exists}")
+    if skipped_past:
+        result.append(f"⏭ Пропущено (прошлые даты): {skipped_past}")
+    if not_found_names:
+        result.append("")
+        result.append("⚠️ Не найдены в базе:")
+        for n in sorted(not_found_names):
+            result.append(f"  • {n}")
+    
+    if total_processed == 0:
+        result.append("")
+        result.append("⚠️ Не найдено ни одной отметки РВ (х) в таблице")
+    
+    return "\n".join(result)
+
+def parse_excel_date_cell(cell):
+    """Пытается распарсить ячейку как дату: '01.ноя', '01.11.2026', datetime"""
+    from datetime import datetime as dt, date as dt_date
+    if cell is None:
+        return None
+    
+    # Если это уже дата (openpyxl может вернуть datetime)
+    if isinstance(cell, dt):
+        return cell.date()
+    if isinstance(cell, dt_date):
+        return cell
+    
+    s = str(cell).strip().lower()
+    if not s:
+        return None
+    
+    # Формат "01.ноя"
+    m = re.match(r'^(\d{1,2})\.([а-яa-z]{3,4})', s)
+    if m:
+        day_num = int(m.group(1))
+        month_str = m.group(2)[:3]
+        if month_str in MONTHS_SHORT:
+            month_num = MONTHS_SHORT[month_str]
+            # Год: берём текущий, если месяц >= текущего, иначе следующий
+            now = date.today()
+            year = now.year if month_num >= now.month else now.year + 1
+            try:
+                return date(year, month_num, day_num)
+            except:
+                return None
+    
+    # Формат "01.11" (без года)
+    m = re.match(r'^(\d{1,2})\.(\d{1,2})$', s)
+    if m:
+        day_num = int(m.group(1))
+        month_num = int(m.group(2))
+        now = date.today()
+        year = now.year if month_num >= now.month else now.year + 1
+        try:
+            return date(year, month_num, day_num)
+        except:
+            return None
+    
+    # Формат "01.11.2026"
+    m = re.match(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})$', s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except:
+            return None
+    
+    return None
+
+def match_employee(excel_name, employees):
+    """Сопоставляет 'Антоновский М.' с 'Максим Антоновский' по фамилии + первой букве имени"""
+    # Нормализуем
+    excel_parts = excel_name.replace(".", " ").split()
+    excel_parts = [p for p in excel_parts if p]
+    if not excel_parts:
+        return None
+    
+    surname_excel = excel_parts[0].lower()
+    initial_excel = excel_parts[1][0].lower() if len(excel_parts) > 1 else ""
+    
+    for emp in employees:
+        # В БД: "Максим Антоновский" (имя фамилия) или "Иван Петров"
+        db_parts = emp[1].split()
+        if not db_parts:
+            continue
+        # Фамилия — последнее слово
+        surname_db = db_parts[-1].lower()
+        # Имя — первое слово
+        first_name_db = db_parts[0].lower()
+        
+        if surname_db == surname_excel:
+            # Проверяем инициал
+            if not initial_excel or first_name_db.startswith(initial_excel):
+                return emp
+    
+    return None
+
 # ==================== РАСПИСАНИЕ ====================
 
 def schedule_menu():
@@ -664,7 +921,6 @@ async def sched_custom_process(message):
         if uid in user_data: del user_data[uid]
 
 async def show_schedule(msg, for_date, employees):
-    """Заголовок в винительном падеже: 'Расписание на пятницу, 05 октября'"""
     text = f"📅 Расписание на {fmt_date_acc(for_date)}\n\n{format_schedule(for_date, employees)}"
     await msg.answer(text, reply_markup=back_button())
 
@@ -880,7 +1136,6 @@ async def rec_remove_process(callback):
 # ==================== РАССЫЛКИ ====================
 
 async def send_morning_schedule():
-    """07:00 — дневная смена сегодня + ночная смена сегодня"""
     today = date.today()
     employees = db.list_employees()
     if not employees:
@@ -902,13 +1157,11 @@ async def send_morning_schedule():
     night_w = list(set(get_night_schedule(today, employees, ov_today)))
 
     text = f"🌅 Доброе утро!\n📅 {fmt_date_full(today)}\n\n"
-
     text += "☀️ Дневная смена (08:00-20:00):\n"
     if day_w:
         text += "\n".join(format_workers_list(day_w, ds_today, "day", employees, ov_today)) + "\n"
     else:
         text += "  ❌ Нет\n"
-
     text += "\n🌙 Ночная смена (20:00-08:00):\n"
     if night_w:
         text += "\n".join(format_workers_list(night_w, ds_today, "night", employees, ov_today)) + "\n"
@@ -922,7 +1175,6 @@ async def send_morning_schedule():
             pass
 
 async def send_evening_schedule():
-    """19:00 — ночная смена сегодня + дневная смена завтра"""
     today = date.today()
     tomorrow = today + timedelta(days=1)
     employees = db.list_employees()
@@ -946,13 +1198,11 @@ async def send_evening_schedule():
     day_w = list(set(get_day_schedule(tomorrow, employees, ov_tomorrow)))
 
     text = f"🌆 Добрый вечер!\n📅 {fmt_date_full(today)}\n\n"
-
     text += "🌙 Ночная смена сегодня (20:00-08:00):\n"
     if night_w:
         text += "\n".join(format_workers_list(night_w, ds_today, "night", employees, ov_today)) + "\n"
     else:
         text += "  ❌ Нет\n"
-
     text += f"\n☀️ Дневная смена завтра ({fmt_date_full(tomorrow)}, 08:00-20:00):\n"
     if day_w:
         text += "\n".join(format_workers_list(day_w, ds_tomorrow, "day", employees, ov_tomorrow)) + "\n"
